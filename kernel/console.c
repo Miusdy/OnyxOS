@@ -50,9 +50,10 @@ struct {
   // input circular buffer
 #define INPUT_BUF_SIZE 128
   char buf[INPUT_BUF_SIZE];
-  uint r; // Read index
-  uint w; // Write index
-  uint e; // Edit index
+  uint r;         // Read index
+  uint w;         // Write index
+  int secret_pid; // root process suppressing input echo, or zero
+  uint e;         // Edit index
 } cons;
 
 //
@@ -173,14 +174,16 @@ consoleintr(int c)
     while (cons.e != cons.w &&
            cons.buf[(cons.e - 1) % INPUT_BUF_SIZE] != '\n') {
       cons.e--;
-      consputc(BACKSPACE);
+      if (!cons.secret_pid)
+        consputc(BACKSPACE);
     }
     break;
   case C('H'): // Backspace
   case '\x7f': // Delete key
     if (cons.e != cons.w) {
       cons.e--;
-      consputc(BACKSPACE);
+      if (!cons.secret_pid)
+        consputc(BACKSPACE);
     }
     break;
   default:
@@ -188,7 +191,8 @@ consoleintr(int c)
       c = (c == '\r') ? '\n' : c;
 
       // echo back to the user.
-      consputc(c);
+      if (!cons.secret_pid)
+        consputc(c);
 
       // store for consumption by consoleread().
       cons.buf[cons.e++ % INPUT_BUF_SIZE] = c;
@@ -217,4 +221,29 @@ consoleinit(void)
   // to consoleread and consolewrite.
   devsw[CONSOLE].read = consoleread;
   devsw[CONSOLE].write = consolewrite;
+}
+
+int
+consoleecho(int enabled)
+{
+  struct proc *p = myproc();
+  if (p->uid != 0 || (enabled != 0 && enabled != 1))
+    return -1;
+  acquire(&cons.lock);
+  if (cons.secret_pid && cons.secret_pid != p->pid) {
+    release(&cons.lock);
+    return -1;
+  }
+  cons.secret_pid = enabled ? 0 : p->pid;
+  release(&cons.lock);
+  return 0;
+}
+
+void
+consoleforget(int pid)
+{
+  acquire(&cons.lock);
+  if (cons.secret_pid == pid)
+    cons.secret_pid = 0;
+  release(&cons.lock);
 }

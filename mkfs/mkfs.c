@@ -10,6 +10,7 @@
 #include "kernel/fs.h"
 #include "kernel/stat.h"
 #include "kernel/param.h"
+#include "common/auth.h"
 
 #ifndef static_assert
 #define static_assert(a, b)                                                    \
@@ -58,6 +59,7 @@ void rsect(uint sec, void *buf);
 uint ialloc(ushort type, ushort mode);
 void iappend(uint inum, void *p, int n);
 void die(const char *);
+void accounts_init(uint);
 
 // convert to riscv byte order
 ushort
@@ -179,6 +181,8 @@ main(int argc, char *argv[])
 
     close(fd);
   }
+
+  accounts_init(rootino);
 
   // fix size of root inode dir
   rinode(rootino, &din);
@@ -321,4 +325,65 @@ die(const char *s)
 {
   perror(s);
   exit(1);
+}
+
+static void
+entry(uint parent, uint ino, const char *name)
+{
+  struct dirent de;
+  memset(&de, 0, sizeof(de));
+  de.inum = xshort(ino);
+  strncpy(de.name, name, DIRSIZ);
+  iappend(parent, &de, sizeof(de));
+}
+
+static uint
+directory(uint parent, const char *name, int uid, int mode)
+{
+  struct dinode di;
+  uint ino = ialloc(T_DIR, mode);
+  entry(parent, ino, name);
+  entry(ino, ino, ".");
+  entry(ino, parent, "..");
+  rinode(ino, &di);
+  di.uid = xshort(uid);
+  di.gid = xshort(uid);
+  // As with runtime create(), '..' holds a link to the parent directory.
+  winode(ino, &di);
+  rinode(parent, &di);
+  di.nlink = xshort(xshort(di.nlink) + 1);
+  winode(parent, &di);
+  return ino;
+}
+
+void
+accounts_init(uint root)
+{
+  struct accounts db;
+  const char *names[AUTH_COUNT] = {"root", "alice", "bob"};
+  int ids[AUTH_COUNT] = {0, 1001, 1002};
+  int rng = open("/dev/urandom", O_RDONLY);
+  if (rng < 0)
+    die("account salts");
+  memset(&db, 0, sizeof(db));
+  db.magic = xint(AUTH_MAGIC);
+  db.count = xint(AUTH_COUNT);
+  for (int i = 0; i < AUTH_COUNT; i++) {
+    struct account *a = &db.entry[i];
+    strcpy(a->name, names[i]);
+    a->uid = xshort(ids[i]);
+    a->gid = xshort(ids[i]);
+    if (read(rng, a->salt, sizeof(a->salt)) != sizeof(a->salt))
+      die("account salt");
+    // Public teaching credentials. Change them with passwd before real use.
+    auth_hash(names[i], a->salt, a->hash);
+  }
+  close(rng);
+  uint etc = directory(root, "etc", 0, 0755);
+  uint ino = ialloc(T_FILE, 0600);
+  entry(etc, ino, "passwd");
+  iappend(ino, &db, sizeof(db));
+  uint home = directory(root, "home", 0, 0755);
+  directory(home, "alice", 1001, 0700);
+  directory(home, "bob", 1002, 0700);
 }

@@ -46,6 +46,7 @@ class QEMU(object):
 
     def __init__(self, reset=False, control=False):
         self.commands = []
+        self.stopped = False
         self.logbase = Path(config.artifacts) / (str(time.time_ns()) + "-cpu" + str(config.cpus))
         self.logbase.parent.mkdir(parents=True, exist_ok=True)
         sessions.append(str(self.logbase))
@@ -114,6 +115,8 @@ class QEMU(object):
         self.stop(signal.SIGKILL)
 
     def stop(self, sig=signal.SIGTERM):
+        if getattr(self, "stopped", False):
+            return
         # make and QEMU share a private process group. Kill both, including
         # when make has already exited, and wait before reusing the image.
         try:
@@ -134,6 +137,7 @@ class QEMU(object):
         if self.control_dir:
             self.control_dir.cleanup()
             self.control_dir = None
+        self.stopped = True
 
     def qmp(self, command):
         if self.control_socket is None:
@@ -203,6 +207,10 @@ class QEMU(object):
     # could still be sitting in the UART when the harness killed qemu,
     # leaving no pending log and no files to recover.
     def wait_shell(self, timeout=30):
+        self.monitor(r'login: $', timeout=timeout)
+        self.cmd("root\n")
+        self.monitor(r'Password: $', timeout=timeout)
+        self.cmd("root\n")
         self.monitor(r'\$ *$', timeout=timeout)
 
     def error(self, *regexps):
@@ -318,7 +326,7 @@ def test_usertests(test=""):
         q.monitor('^ALL TESTS PASSED', progress='test', timeout=timeout)
 
 DEDICATED = ("cowtest", "kmemtest", "waitxtest", "cputest", "priotest",
-             "idtest", "permtest", "mixstress", "sigtest")
+             "idtest", "permtest", "privtest", "mixstress", "sigtest")
 
 
 def git_metadata(*command):

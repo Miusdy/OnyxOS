@@ -104,7 +104,7 @@ tags: $(OBJS)
 ULIB = $U/ulib.o $U/usys.o $U/printf.o $U/umalloc.o
 
 _%: %.o $(ULIB) $U/user.ld
-	$(LD) $(LDFLAGS) -T $U/user.ld -o $@ $< $(ULIB)
+	$(LD) $(LDFLAGS) -T $U/user.ld -o $@ $(filter %.o,$^)
 	$(OBJDUMP) -S $@ > $*.asm
 	$(OBJDUMP) -t $@ | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $*.sym
 
@@ -120,8 +120,10 @@ $U/_forktest: $U/forktest.o $(ULIB)
 	$(LD) $(LDFLAGS) -N -e main -Ttext 0 -o $U/_forktest $U/forktest.o $U/ulib.o $U/usys.o
 	$(OBJDUMP) -S $U/_forktest > $U/forktest.asm
 
-mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
-	gcc -Wno-unknown-attributes -I. -o mkfs/mkfs mkfs/mkfs.c
+$U/_login $U/_passwd: $U/account.o common/auth.o
+
+mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h common/auth.c common/auth.h
+	gcc -Wno-unknown-attributes -I. -o mkfs/mkfs mkfs/mkfs.c common/auth.c
 
 # Prevent deletion of intermediate files, e.g. cat.o, after first build, so
 # that disk image changes after first build are persistent until clean.  More
@@ -169,11 +171,15 @@ UPROGS=\
 	$U/_idtest\
 	$U/_chmod\
 	$U/_permtest\
+	$U/_login\
+	$U/_passwd\
+	$U/_whoami\
+	$U/_privtest\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)
 
--include kernel/*.d user/*.d
+-include kernel/*.d user/*.d common/*.d
 
 clean: 
 	rm -f *.tex *.dvi *.idx *.aux *.log *.ind *.ilg \
@@ -219,6 +225,7 @@ check-qemu-version:
 		exit 1; \
 	fi
 
+CLANG_FORMAT ?= clang-format
 .PHONY: fmt
 fmt:
-	clang-format -i $(wildcard kernel/*.[ch] user/*.[ch] mkfs/*.c)
+	$(CLANG_FORMAT) -i $(wildcard kernel/*.[ch] user/*.[ch] mkfs/*.c common/*.[ch])

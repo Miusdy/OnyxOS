@@ -249,6 +249,8 @@ main(void)
 
   // Read and run input commands.
   while (getcmd(buf, sizeof(buf)) >= 0) {
+    if (strcmp(buf, "exit\n") == 0)
+      exit(0);
     job_refresh();
     char *cmd = buf;
     while (*cmd == ' ' || *cmd == '\t')

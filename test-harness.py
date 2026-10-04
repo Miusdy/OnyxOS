@@ -34,7 +34,14 @@ class HarnessTests(unittest.TestCase):
 
     def test_last_read_is_checked_before_timeout(self):
         self.q.read.side_effect = lambda: setattr(self.q, "output", "$ ")
-        self.q.wait_shell(timeout=0)
+        self.q.monitor(r"\$ *$", timeout=0)
+
+    def test_login_sequence(self):
+        self.q.monitor = Mock()
+        self.q.cmd = Mock()
+        self.q.wait_shell()
+        self.assertEqual([c.args[0] for c in self.q.cmd.call_args_list], ["root\n", "root\n"])
+        self.assertEqual(len(self.q.monitor.call_args_list), 3)
 
     def test_early_exit_is_not_silently_retried(self):
         self.q.proc.poll.return_value = 1
@@ -45,6 +52,14 @@ class HarnessTests(unittest.TestCase):
         with patch.object(harness, "run", side_effect=subprocess.CalledProcessError(2, "make")):
             with self.assertRaises(subprocess.CalledProcessError):
                 self.q.build_xv6()
+
+    def test_stop_is_idempotent_after_crash(self):
+        self.q.control_stream = self.q.control_socket = self.q.control_dir = None
+        with patch.object(harness.os, "killpg") as killpg:
+            self.q.stop(harness.signal.SIGKILL)
+            self.q.stop()
+            killpg.assert_called_once_with(self.q.proc.pid, harness.signal.SIGKILL)
+        self.q.proc.wait.assert_called_once()
 
     def test_qmp_events_do_not_count_as_responses(self):
         self.q.control_socket = Mock()
@@ -183,7 +198,11 @@ from pathlib import Path
 if 'qemu' not in sys.argv:
     sys.exit(0)
 Path('guest.pid').write_text(str(os.getpid()))
-print('$ ', end='', flush=True)
+print('login: ', end='', flush=True)
+sys.stdin.readline()
+print('\\nPassword: ', end='', flush=True)
+sys.stdin.readline()
+print('\\n$ ', end='', flush=True)
 sys.stdin.readline()
 print('cowtest: OK', flush=True)
 if os.environ['INJECT_MODE'] == 'failure':

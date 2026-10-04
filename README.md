@@ -8,19 +8,18 @@
 
 本项目以 MIT 6.1810 教学操作系统 **xv6-riscv**（`riscv` 分支，基线 HEAD `9e3161a`）为起点，逐步演进为一个 "miniOS"。目标不是做一个"看起来像操作系统"的演示，而是以**可快速追加、可独立验证**的小步前进方式，补全操作系统概念（进程、内存、锁、日志、CPU 统计），并在每一步都保留真实的工程权衡。
 
-### 当前进度（2026-10-02）
+### 当前进度（2026-10-03）
 
 已完成批次 1–8，以及 miniOS 路线图的**阶段一：自动化验证**和**阶段二：信号与终端作业控制**。阶段二新增最小信号接口、进程组、Ctrl-C/Ctrl-Z 前台作业控制、Shell 的 `jobs`/`fg`/`bg`，以及 `sigtest`。
 
-批次 11 正在实施**阶段三：用户身份与权限**，前三步已完成：身份字段与身份系统调用、inode 属主与权限位（含磁盘格式变更）、权限检查生效。见下方[批次 11](#批次-11--用户身份与权限)一节。
-该阶段余下两项是特权操作（`kill`/`setprio` 等）的越权约束，以及最小账户与登录流程。
+批次 11 已实现**阶段三：用户身份与权限**：UID/GID、文件与目录权限、跨用户进程控制限制、特权设备/日志操作，以及口令认证登录和 root 改密。验收结果见[阶段三验证记录](docs/stage3-validation.md)。
 
 阶段一验收通过：19 项宿主测试、单核/三核各 10 轮共 120 项专用测试、
 两种配置的完整 `usertests` 和全部崩溃恢复测试。阶段二单核/三核专用集合、
 两种配置的完整 `usertests` 和崩溃恢复也全部通过；`sigtest` 另在单核连续通过
 3 轮。详细阶段一结果及环境限制见
 [阶段一验证记录](docs/stage1-validation.md)。远端构建和测试状态以
-[GitHub Actions](https://github.com/Miusdy/HachileiOS/actions/workflows/test.yml)
+[GitHub Actions](https://github.com/Miusdy/OnyxOS/actions/workflows/test.yml)
 为准，本地通过不代表远端 CI 已通过。
 
 完整范围见 [miniOS 路线图](docs/minios-roadmap.md)；阶段三的设计、风险清单与分批计划见 [批次 11 计划](docs/batch11-plan.md)。
@@ -38,8 +37,9 @@
 
 **依赖**
 
-- RISC-V 工具链：`riscv64-unknown-elf-` 或 `riscv64-linux-gnu-`
-- `qemu-system-riscv64`
+- RISC-V GCC/binutils：`riscv64-elf-`、`riscv64-unknown-elf-` 或 `riscv64-linux-gnu-`
+- `qemu-system-riscv64` ≥ 7.2、`make`、`bc`；宿主测试需要 Python ≥ 3.11。
+- macOS/Homebrew：`brew install riscv64-elf-gcc qemu python@3.12`；用 `python3.12` 执行宿主测试。格式检查与 CI 对齐到 `clang-format` 21；可用 `make fmt CLANG_FORMAT=/path/to/clang-format` 指定可执行文件。
 
 **构建与运行**
 
@@ -50,6 +50,10 @@ make clean         # 清理构建产物
 
 默认启动参数由 `Makefile` 给出：`-m 128M -smp 3`（128 MiB 内存，3 个 hart）。
 
+启动后先出现 `login:`。教学镜像预置 `root/root`（UID/GID 0）、`alice/alice`（1001）和 `bob/bob`（1002），斜杠前后分别是用户名和初始口令；**这些是公开的教学口令**。输入口令时不回显，认证成功后才进入 Shell。root 可用 `passwd NAME` 修改任一预置账户口令，Shell 内建 `exit` 退出并回到登录。普通账户可在 `/home/alice`、`/home/bob` 的各自私有目录中写文件。内核测试以认证后的 root 身份运行。
+
+`make clean` 或删除 `fs.img` 后重建会重置账户和文件，旧数据须先备份。`0x10203040` 的旧 inode 镜像会被明确拒绝；同为 `0x10203041` 但没有账户文件的早期镜像会停在登录错误提示，需要备份后重建，不会自动绕过认证。
+
 **新增的用户程序**
 
 在 `$` 提示符下可直接运行：
@@ -58,7 +62,7 @@ make clean         # 清理构建产物
 | --- | --- |
 | `ps` | 列出进程，含用户态/内核态 CPU 时间 |
 | `free` | 物理内存总量 / 已用 / 空闲 |
-| `dmesg` | 回放内核日志环形缓冲区 |
+| `dmesg` | 回放内核日志环形缓冲区（仅 root） |
 | `top [n]` | 持续刷新进程表 + CPU 增量；给出 n 时刷新 n 次后退出 |
 | `neofetch` | 一次性系统概览（含在线 hart 数、磁盘 I/O） |
 | `cputest [ticks]` | CPU 时间统计的自检程序（默认累计 20 tick） |
@@ -75,8 +79,12 @@ make clean         # 清理构建产物
 | `chmod mode path` | 改文件权限位；属主或 uid 0 可用 |
 | `idtest` | 身份规则的自检程序：fork 继承、exec 保留、降权不可逆 |
 | `permtest` | 权限判定的自检程序，以负向用例为主 |
+| `privtest` | 跨用户进程控制、特权操作、跨页进程快照和失败路径自检 |
+| `login` | 由 init 启动的口令认证入口；直接执行要求 root |
+| `passwd NAME` | root 修改预置账户口令，需两次输入一致 |
+| `whoami` | 显示预置账户名，其他 UID 显示数值 |
 
-镜像里共有 **39** 个用户程序（即 `UPROGS` 的 39 项）。不带参数运行 `help` 会按类别列出其中 **38 条**——除 `help` 自身以外的全部命令——并把 miniOS 新增的命令用 `*` 标出；`help ps` 则只显示该命令的用法与补充细节。`help` 本身没有把自己列进索引，但它与其他命令一样只是根目录里的普通程序。Shell 内建 `cd`、`jobs`、`fg PGID`、`bg PGID`；其余命令通常通过 exec 运行。
+镜像里共有 **43** 个用户程序（即 `UPROGS` 的 43 项）。不带参数运行 `help` 会按类别列出其中 **42 条**——除 `help` 自身以外的全部命令——并把 miniOS 新增的命令用 `*` 标出；`help ps` 则只显示该命令的用法与补充细节。`help` 本身没有把自己列进索引，但它与其他命令一样只是根目录里的普通程序。Shell 内建 `cd`、`jobs`、`fg PGID`、`bg PGID`、`exit`；其余命令通常通过 exec 运行。
 
 ```
 $ ps
@@ -117,7 +125,8 @@ pid  ppid state  vsz  rss  usr sys prio name
 | 11 | 身份字段与身份系统调用 | `getuid()` (40) / `getgid()` (41) / `setuid()` (42) / `setgid()` (43) → `id` / `idtest` | ✅ 已验证 |
 | 11 | inode 属主与权限位（**改磁盘格式**） | `dinode` 增 `mode`/`uid`/`gid`，`FSMAGIC` 升级 → `chmod()` (44) / `chown()` (45) → `ls -l` / `chmod` | ✅ 已验证 |
 | 11 | 权限检查生效 | `perm_ok()` + 目录搜索检查 → `permtest` | ✅ 已验证 |
-| 11 | 镜像扩容 | `FSSIZE` 2000 → 2400（`writebig` 的余量） | ✅ 已验证 |
+| 11 | 特权边界与登录 | 跨 UID 拒绝、root 设备/日志、PBKDF2 登录、改密与持久性 | 见阶段三验收记录 |
+| 11 | 镜像扩容 | `FSSIZE` 2000 → 2400 → 3200（程序和 `writebig` 余量） | 见阶段三验收记录 |
 
 ---
 
@@ -126,11 +135,12 @@ pid  ppid state  vsz  rss  usr sys prio name
 **`psinfo()` 系统调用（`SYS_psinfo = 23`）**
 
 - 原型：`int psinfo(struct psinfo *buf, int max);`
-- 在内核中**一次性快照整个进程表**到一个 `kalloc` 页，然后一次 `copyout` 给用户，返回写入的条目数。
+- 在内核中**一次性快照整个进程表**到两个独立的 `kalloc` 页，释放锁后按实际条目数 `copyout` 给用户，返回写入的条目数。
 - 布局定义在 `kernel/psinfo.h`，被内核和用户态**共同包含**，因此两边的结构体布局必须完全一致。
 
 | 字段 | 含义 |
 | --- | --- |
+| `uid` / `gid` | 进程身份与主组；统计对所有身份可见 |
 | `pid` / `ppid` | 进程号 / 父进程号 |
 | `state` | `PSTATE_UNUSED` … `PSTATE_ZOMBIE`（包含 `PSTATE_STOPPED`，数值与 `enum procstate` 对齐） |
 | `sz` | 虚拟内存大小（**不是**常驻内存 RSS） |
@@ -138,14 +148,7 @@ pid  ppid state  vsz  rss  usr sys prio name
 | `u_ticks` / `k_ticks` | 用户态 / 内核态累计 tick（批次 3 加入） |
 | `name[16]` | 进程名，保证 NUL 结尾 |
 
-批次 1 引入时 `sizeof(struct psinfo) == 56`；批次 3 加入 CPU 计数、批次 4 加入 `rss` 后，它变成**正好 64 字节**。内核用编译期断言强制「整张进程表的快照能放进一个 `kalloc()` 页」：
-
-```c
-typedef char psinfo_fits_one_page
-    [(NPROC * sizeof(struct psinfo) <= PGSIZE) ? 1 : -1];
-```
-
-`64 × NPROC(64) = 4096 = PGSIZE`：断言仍然成立，但余量已经为零（见批次 4 的警示框）。
+`struct psinfo` 现为 72 字节。每个 4096 字节页放 56 条记录，最多 64 个进程需要两页；内核使用编译期断言保证容量。两页不要求物理连续，用户缓冲区仍是连续的记录数组。第二页分配失败及任一次 `copyout` 失败都会释放已分配的页。
 
 **`freemem()` 系统调用（`SYS_freemem = 24`）**
 
@@ -250,7 +253,7 @@ vm_rss(pagetable_t pagetable, uint64 sz)
 - **只统计 `va < sz` 的叶子。** 因此位于地址空间顶端的 trampoline 与 trapframe 页被自然排除；用户栈在 `sz` 之下，属于 RSS；栈保护页未被映射，自然不计入。
 - **调用者持有 `p->lock`**（`psinfo()` 正是如此），因此遍历期间页表不会被拆掉；本函数只读。
 
-> ⚠️ **`struct psinfo` 已无任何余量。** 加入 `rss` 后 sizeof 从 56 变到**正好 64 字节**，`64 × NPROC(64) = 4096 = PGSIZE`，编译期断言仍能通过但已经踩满。**再增加任何字段都会编译失败**，届时快照必须跨两页。这是有意的护栏，不是需要绕过的 bug。
+> 阶段三加入 UID/GID 后，进程快照已扩展为两页，见前面的 `psinfo()` 接口说明。
 
 **`waitx()` 系统调用（`SYS_waitx = 26`）**
 
@@ -312,7 +315,7 @@ vm_rss(pagetable_t pagetable, uint64 sz)
 **`setprio()` 系统调用（`SYS_setprio = 29`）**
 
 - 原型：`int setprio(int pid, int prio);` —— **数值越小越紧急**，范围 `PRIO_HIGHEST`(0)..`PRIO_LOWEST`(9)，常量定义在共享头 `kernel/psinfo.h`。
-- **无权限检查**：xv6 没有 uid/gid，任何进程都可以修改任何进程的优先级。这是显式记录的教学简化。
+- **权限检查**：阶段三已将优先级修改限制为同 UID 或 root，在目标进程锁内检查。
 - **fork 不继承优先级**：`kfork()` 是逐字段复制而非 `*np = *p`，所以新进程从 `PRIO_DEFAULT`(5) 开始。这让"每个进程起点平等"成为可预测的语义，也让优先级只能通过显式 `setprio` 改变。
 
 **调度器：单遍择优 + 老化**
@@ -427,7 +430,7 @@ vm_rss(pagetable_t pagetable, uint64 sz)
 
 ### 批次 11 — 用户身份与权限
 
-路线图阶段三的第一步到第三步。它和前面所有批次的性质不同：**这是第一次改动磁盘格式**，而 `fs.img` 是持久状态，改错了不是重新编译能修的；同时它引入的是**安全语义** —— 漏一处检查的症状不是崩溃，而是静默的越权：程序照常运行，只是不该读的读到了。因此每一步都要求配对的负向用例，只测"正向能用"等于没测。
+路线图阶段三的五个实施批次。它和前面所有批次的性质不同：**这是第一次改动磁盘格式**，而 `fs.img` 是持久状态，改错了不是重新编译能修的；同时它引入的是**安全语义** —— 漏一处检查的症状不是崩溃，而是静默的越权：程序照常运行，只是不该读的读到了。因此每一步都要求配对的负向用例，只测"正向能用"等于没测。
 
 **身份字段与四个系统调用**（`SYS_getuid` = 40、`SYS_getgid` = 41、`SYS_setuid` = 42、`SYS_setgid` = 43）
 
@@ -437,7 +440,7 @@ vm_rss(pagetable_t pagetable, uint64 sz)
 
 **磁盘格式：inode 的属主与权限位**
 
-`struct dinode` 增加 `mode`/`uid`/`gid` 三个 16 位字段。**只加 6 字节不是一个选项**：`mkfs` 有 `assert((BSIZE % sizeof(struct dinode)) == 0)`，而 `IPB = 16` 依赖 `sizeof(dinode) == 64`。所以这 6 字节从 `addrs[]` 里腾出来 —— `NDIRECT` 12 → 10，`sizeof` 仍是 **64**，磁盘布局一个字节都没动（`IPB`、`IBLOCK`、`nmeta` 的推导、`df` 的口径全部继续成立）。代价是单文件上限少 2 KiB（`MAXFILE` 268 → 266，约 272 KiB），由符号自动吸收，测试套件不受影响。
+`struct dinode` 增加 `mode`/`uid`/`gid` 三个 16 位字段。**只加 6 字节不是一个选项**：`mkfs` 有 `assert((BSIZE % sizeof(struct dinode)) == 0)`，而 `IPB = 16` 依赖 `sizeof(dinode) == 64`。所以这 6 字节从 `addrs[]` 里腾出来 —— `NDIRECT` 12 → 10，`sizeof` 仍是 **64**，磁盘布局一个字节都没动（`IPB`、`IBLOCK`、`nmeta` 的推导、`df` 的口径全部继续成立）。代价是单文件上限少 2 KiB（`MAXFILE` 268 → 266，即 266 KiB），由符号自动吸收，测试套件不受影响。
 
 `FSMAGIC` 从 `0x10203040` 升到 `0x10203041`，**并保留旧值**：`fsinit()` 认出旧镜像时会说"这是更早的 inode 格式，请重跑 mkfs"，而不是一句无信息量的 `invalid file system`。**不提供自动迁移** —— 本项目唯一的持久文件系统是每次构建由 `mkfs` 重新生成的 `fs.img`，没有需要跨格式保留的数据；这是一个明确的取舍，不是遗漏。
 
@@ -449,9 +452,17 @@ vm_rss(pagetable_t pagetable, uint64 sz)
 - **uid 0 绕过读写位，但不绕过执行位**：没有任何 x 位的文件不是程序，`exec` 必须拒绝。这条规则同样用于目录搜索，所以一个 x 位全清的目录对所有人都不可进入（可从父目录 `chmod` 救回）。用同一条规则而不是两条，是刻意的。
 - 判据是"**每一位都被授出**"，即 `((mode >> shift) & acc) == acc`。用 `& acc` 的非零值当允许是错的：`O_RDWR` 请求 R|W 时，一个 `0400` 的文件会因为"读那一位命中"而**放行写入**。
 
-**检查点**：`namex()` 穿过每一级目录都要 x；`create()` **只在新条目**时才要父目录的 w（已存在的名字由文件自身的 mode 决定）；`sys_link()`/`sys_unlink()` 要父目录 w；`sys_chdir()` 要目标目录 x；`kexec()` 要执行位；`sys_open()` 按 `omode` 推出需要的位，**`O_TRUNC` 也算一次写**。**权限只在 `open()` 时判定一次**，已打开的描述符不复查 —— 这是 POSIX 行为，也是唯一能避免"检查与使用之间 mode 被改"的做法。
+**检查点**：`namex()` 穿过每一级目录都要 x；`create()` **只在新条目**时才要父目录的 w（已存在的名字由文件自身的 mode 决定）；`sys_link()`/`sys_unlink()` 要父目录 w；非 root 建立硬链接还必须是属主或对源 inode 同时有读写权限，防止给别人的账户文件等敏感 inode 增加链接；`sys_chdir()` 要目标目录 x；`kexec()` 要执行位；`sys_open()` 按 `omode` 推出需要的位，**`O_TRUNC` 也算一次写**。**权限只在 `open()` 时判定一次**，已打开的描述符不复查 —— 这是 POSIX 行为，也是唯一能避免"检查与使用之间 mode 被改"的做法。
 
-**镜像扩容**：这一步新增的程序把镜像推过了临界点 —— CI 上 `usertests` 的 `writebig` 报 `balloc: out of blocks`，因为旧余量只有 43 块而它需要 `MAXFILE` + 1 = 269 块。`FSSIZE` 2000 → **2400**，余量约 595 块。这一步值得单独记住：**"能不能过测试"取决于编译器产出的二进制体积**，本身就是不安全的配置。
+**进程与特权边界**：`kill`、`signal`、`setprio`、`setpgid` 仅允许 root 或同 UID 调用者控制目标，身份读取和操作都在目标进程锁内。非 root 加入已有组或设置终端前台组时，组必须存在且所有当前成员属于自己。`killpg` 对混合身份组只向有权限的成员投递，至少投递一次返回 0，否则返回 -1；终端中断使用保存的前台 UID 再检查成员，不能依赖中断发生时碰巧运行的进程身份。`mknod`、`klog` 和密码输入的 `ttyecho` 仅 root 可用。`psinfo` 保持公开，`ps` 增加 UID/GID 列。
+
+**账户与认证**：`mkfs` 创建三个固定账户、私有主目录和 root 所有的 `/etc/passwd`（0600）。账户数据库是带版本标识的固定长度二进制格式，定义在 `common/auth.h`；与原计划的文本格式不同，不兼容宿主 Unix passwd 文件。口令使用 **PBKDF2-HMAC-SHA256，10,000 轮、16 字节独立盐、32 字节输出**；盐来自构建主机的 `/dev/urandom`，哈希实现用 Python `hashlib` 交叉校验。登录失败不透露用户名是否存在，等待 1/2/4/8 秒（后续固定 8 秒）；账户文件缺失、权限错误或内容无效均拒绝登录。输入上限为 63 字节，超长、空口令和两次输入不一致均拒绝。
+
+`init` 每次启动 `login`，认证后先降 GID、再降 UID，关闭账户文件并清理缓冲区后 exec Shell；没有默认免密 root 通道。测试脚本显式输入教学 root 口令。`passwd NAME` 仅 root 可用，固定长度数据库以一次 write 日志事务原位更新、不先截断，因此崩溃恢复看到旧值或新值。目录锁 `/etc/pwlock` 串行化改密；异常退出遗留锁时由 root 检查后 `rm /etc/pwlock`。每账户盐在改密时保留，因为客户机没有安全随机源。
+
+这是教学认证实现：预置口令公开、工作因子低于生产用途、没有安全随机设备、账户增删、自助改密、setuid 程序、登录会话隔离或密码恢复服务。它验证最小访问控制语义，不声称生产级安全。`whoami` 使用固定账户名映射。
+
+**镜像预算**：`FSSIZE` 为 3200 块（3.125 MiB），元数据 47 块，数据区 3153 块，位图仍只需一块，日志/缓存容量未变。新增认证和权限测试程序后，本地镜像约使用 2049 块（含元数据），剩余约 1151 块；`writebig` 需要 266 个数据块及 1 个间接块。编译器不同会改变镜像使用量，实际以 mkfs/df 和完整回归为准。
 
 ---
 
@@ -482,6 +493,7 @@ vm_rss(pagetable_t pagetable, uint64 sz)
 | 43 | `SYS_setgid` | `int setgid(int gid)` | `0`，或 `-1`（同上） |
 | 44 | `SYS_chmod` | `int chmod(const char *path, int mode)` | `0`，或 `-1`（非属主且非 uid 0） |
 | 45 | `SYS_chown` | `int chown(const char *path, int uid, int gid)` | `0`，或 `-1`（仅 uid 0） |
+| 46 | `SYS_ttyecho` | `int ttyecho(int enabled)` | root 切换口令输入回显，进程退出自动恢复 |
 
 编号定义在 `kernel/syscall.h`，分发表在 `kernel/syscall.c`，实现在 `kernel/sysproc.c`，用户桩由 `user/usys.pl` 生成。
 
@@ -537,11 +549,11 @@ vm_rss(pagetable_t pagetable, uint64 sz)
 | `kernel/defs.h` | 新函数原型 |
 | `user/user.h` / `usys.pl` | 新系统调用声明与桩 |
 | `user/sh.c` | 前后台进程组、`jobs`、`fg PGID`、`bg PGID`；Shell 忽略前台信号并恢复提示符 |
-| `Makefile` | 批次 1–8 的 12 个 miniOS 用户程序、阶段二的 `sigtest`，以及阶段三的 `id`/`chmod`/`idtest`/`permtest` |
+| `Makefile` | 批次 1–8 的 12 个 miniOS 用户程序、阶段二的 `sigtest`，以及阶段三的 `id`/`chmod`/`idtest`/`permtest`/`privtest`/`login`/`passwd`/`whoami` |
 | `kernel/fs.h` | `struct dinode` 增 `mode`/`uid`/`gid`（`NDIRECT` 12 → 10 以保持 64 字节）；`FSMAGIC`/`FSMAGIC_OLD`；`ACC_R`/`ACC_W`/`ACC_X` |
 | `kernel/file.h` | 内存 inode 同步 `mode`/`uid`/`gid` |
 | `kernel/stat.h` | `struct stat` 增 `mode`/`uid`/`gid`（用户可见 ABI） |
-| `kernel/param.h` | `FSSIZE` 2000 → 2400，并写入余量预算的注释 |
+| `kernel/param.h` | `FSSIZE` 为 3200，保留完整回归的写入余量 |
 | `kernel/exec.c` | `kexec()` 在读文件前检查执行位 |
 | `kernel/sysfile.c` | `create()` 以调用者身份与 0644/0755 建 inode；`open`/`create`/`link`/`unlink`/`chdir` 的权限检查；`chmod()`/`chown()` |
 | `mkfs/mkfs.c` | 初始 inode 的属主与 mode（按主机文件名判断是否程序） |
@@ -587,7 +599,9 @@ python3 test-harness.py                        # 宿主错误路径回归
 ./test-xv6.py crash --cpus 3
 ```
 
-`dedicated` 包含 cowtest、kmemtest、waitxtest、cputest、priotest、idtest、permtest、mixstress、sigtest。
+`dedicated` 包含 cowtest、kmemtest、waitxtest、cputest、priotest、idtest、permtest、privtest、mixstress、sigtest。所有 QEMU 测试先认证为 root。
+
+阶段三另有 `python3 test-auth.py`（哈希参考校验）和 `python3 test-stage3.py --cpus 1` / `--cpus 3`（真实登录、退避、改密、双向文件隔离、重启持久性、旧格式拒绝、损坏账户拒绝）。需要 Python ≥ 3.11，macOS 可用 `python3.12`。测试会重建 `fs.img`，必须先备份需要保留的数据；同一 checkout 的 QEMU 测试不得并发执行。
 每个专用测试默认超时 120 秒，可用 `--timeout` 调整；完整 usertests 为
 600 秒。`--repeat` 表示重复验证，绝不自动重试失败。
 每次运行重新生成 fs.img，会覆盖镜像中的手工文件；同一目录不要并行测试。
@@ -661,7 +675,7 @@ data   blocks  1953  1281  672
 inodes  200 total, 32 used, 168 free
 ```
 
-上面是早期版本镜像首次启动后的历史示例（当时根目录里有 29 个用户程序）。**当前配置是 `FSSIZE = 2400`**（总 2400 块 = 2457600 字节 ≈ 2.34 MiB，元数据 47 块，数据区 2353 块）；按 39 个用户程序的块数核算，数据区已用约 1758 块、空闲约 595 块，而 `writebig` 需要 267 块 —— 这个余量是刻意留的，见批次 11 的"镜像扩容"。示例里的 1328 个已用块中有 47 块是 mkfs 标出的元数据（boot / super / log / inode / 位图），其余 1281 块存放 `README` 与那 29 个用户程序。
+上面是早期版本镜像首次启动后的历史示例（当时根目录有 29 个用户程序）。当前 `FSSIZE = 3200`，有 43 个用户程序，实际余量见批次 11 的镜像预算；历史数字不代表当前构建。
 
 两种口径共享同一个 free 值：元数据块全部标记为已用，空闲块不可能落在元数据区，所以"整盘"与"数据块"两种视角下的 free 必定相同——这不是打印错误。
 
@@ -742,12 +756,12 @@ kmemtest: OK (conserved, no leak over 3 rounds)
 
 ## 已知限制
 
-- 教学配置为最多 64 个进程、每进程 16 个文件描述符、`FSSIZE = 2400` 的文件系统（约 2.34 MiB，数据区 2353 块）；扩大容量需要同时评估日志、缓存和内存。
+- 教学配置为最多 64 个进程、每进程 16 个文件描述符、`FSSIZE = 3200` 的文件系统（3.125 MiB，数据区 3153 块）；扩大容量需要同时评估日志、缓存和内存。
 - **权限模型是刻意的最小集**：没有 setuid/setgid 位、没有 sticky 位、没有补充组与 `/etc/group`、没有文件时间戳与 ACL。
 - **降权不可逆**：只有"实际 uid"一个字段，没有 saved-uid，`setuid()` 到非 0 之后无法回到 root。
 - **uid 0 绕过读写位，但不绕过执行位**：root 能读写任何文件；而一个 x 位全清的文件（含目录）对所有人不可执行、不可进入，需要用 `chmod` 从父目录改回来。
-- **尚无账户与登录**：`init` 直接 fork `exec sh`，shell 以 uid 0 运行；`/etc/passwd`、口令校验与失败延迟都还没有。因此现在只有一个真实身份可用，非 root 身份要靠 `idtest`/`permtest` 自己降权造出来。
-- **`psinfo()` 与 `dmesg` 对所有身份可见**：进程统计只有 pid/内存/次数这类数字，内核日志含完整路径与设备信息 —— 后者的可见性边界是阶段三的下一步。
+- **账户范围固定**：root/alice/bob 由 mkfs 预置，root 可改密；未提供账户增删和普通用户自助改密。教学口令公开，不应当作生产认证配置。
+- **观测权限**：`psinfo()` 的身份与统计对所有用户可见；`dmesg` 的内核日志仅 root 可读。
 - 信号接口是教学用子集，用户处理器需显式调用 `sigreturn()`，每个进程只保存一层处理器上下文，运行期间屏蔽其他可屏蔽信号。
 - Shell 作业表最多保存 16 项；`fg`、`bg` 要求显式 PGID。尚无 POSIX 会话、后台终端读的 SIGTTIN 规则或完整终端行规程。
 - `top` 无参数时持续刷新，可用 Ctrl-C 终止；`top n` 运行指定轮数后退出。
@@ -762,11 +776,11 @@ kmemtest: OK (conserved, no leak over 3 rounds)
 - **调度器每 tick 做一次 O(NPROC) 全表扫描**：择优与老化合并后仍是一次完整遍历。`NPROC = 64` 下成本可忽略，但它确实比原先"遇到第一个 `RUNNABLE` 就走"更贵。
 - **优先级不继承**：`kfork()` 逐字段复制，子进程从 `PRIO_DEFAULT` 开始。若希望子进程继承父进程的优先级，需要显式调用 `setprio`。
 - **老化速率由优先级范围宽度决定**：低优先级进程每 `PRIO_LOWEST - PRIO_HIGHEST + 1` 轮被选中一次。这个比例不是独立参数 —— 改范围就等于改比例。
-- **`setprio` 与 `kill` 仍无权限检查**：任何进程都能改任何进程的优先级、或向任何进程投递信号。身份已经存在（批次 11），但这两处的越权约束是阶段三的下一步 —— 现在还没有"同 uid 或 uid 0"这条规则。
+- **进程控制按 UID 授权**：同 UID 或 root 可操作目标，GID 不授予进程控制权。
 - **优先级范围刻意压窄（0..9）**：不同于 nice(1) 的 -20..19，窄范围让老化在可观测的时间内生效；代价是"优先级"只能表达一档粗略的差别。
 - **`psinfo()` 的成本随进程规模增长**：快照期间会对每个进程持 `p->lock` 遍历页表树，因此映射页很多的进程会让 `psinfo()` 变慢，而 `top` 每轮都要做一次。这里不能改成「先释放锁再遍历」——那样页表可能被并发释放；这是必要权衡，不是疏漏。
 - **RSS 是即时快照，且不区分共享页**：`rss` 统计的是快照瞬间低于 `sz` 的已映射页，批次 8 的共享页会被计入**每个**映射它的进程 —— 与传统 `top` 一致，但意味着 `ps` 里两个进程的 `rss` 相加并不等于它们实际占用的物理内存。要看真实占用，请用 `sysinfo` 的 `pages_shared`。
-- **`struct psinfo` 已无剩余空间**：加入 `rss` 后 sizeof 恰好 64，`64 × NPROC = PGSIZE`。再增字段会直接编译失败，届时快照须跨两页。
+- **`struct psinfo` 跨两页快照**：每项 72 字节；内核分配失败和用户拷贝失败均回收临时页。
 - **`waitx` 的账目可能少一格 tick**：冻结发生在退出路径末尾，此后到 `sched()` 之间若有定时器中断，那一格不会被任何人记录。这是 tick 级采样精度的固有边界。
 - **CPU 时间是采样得到**：内核把 tick 记给被中断的那个进程，因此单次连续占用不足 1 tick（100 ms）的进程可能显示为 0。
 - **`uptime()` 与进程计费之间存在偏斜**：`uptime()`（全局 `ticks`）只在 hart 0 上递增，而被统计的进程可能运行在任意 hart 上，因此两者之间存在少量偏斜；`cputest` 的容差 `TOLERANCE = 4` 即为此设置。
@@ -776,9 +790,9 @@ kmemtest: OK (conserved, no leak over 3 rounds)
 
 ## 路线图
 
-已完成批次 1–8；批次 11 的前三步（身份字段与身份系统调用、inode 属主与权限位、权限检查生效）已完成并通过验证，见[批次 11](#批次-11--用户身份与权限)一节。批次 6 的调度器优先级与批次 8 的写时复制 fork 见其各自的小节；批次 5 的选型讨论保留在 `docs/batch5-plan.md` 第 7 章。
+已完成批次 1–8 和批次 11 的五个实施批次，身份、文件权限、特权边界与认证登录见[批次 11](#批次-11--用户身份与权限)及[阶段三验证记录](docs/stage3-validation.md)。
 
-[miniOS 路线图](docs/minios-roadmap.md) 的阶段一自动化验证与阶段二信号/终端作业控制均已通过本地验收，阶段一记录见 [验证记录](docs/stage1-validation.md)。阶段三进行中：前三步已完成，余下特权操作的越权约束与账户/登录流程，设计与风险清单见 [批次 11 计划](docs/batch11-plan.md)。虚拟内存、存储和网络扩展单独选型。
+[miniOS 路线图](docs/minios-roadmap.md) 的阶段一至三已实施并通过本地验收，命令与结果见各阶段验证记录。阶段四的虚拟内存、存储和网络等扩展仍单独选型。
 
 ---
 

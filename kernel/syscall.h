@@ -44,3 +44,4 @@
 #define SYS_setgid    43
 #define SYS_chmod     44
 #define SYS_chown     45
+#define SYS_ttyecho   46

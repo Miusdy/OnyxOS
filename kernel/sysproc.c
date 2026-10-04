@@ -157,6 +157,8 @@ sys_klog(void)
   uint64 seq, lost;
   int max, n;
 
+  if (p->uid != 0)
+    return -1;
   argaddr(0, &buf);
   argint(1, &max);
   argaddr(2, &useq);
@@ -230,8 +232,7 @@ sys_sysinfo(void)
 // Smaller is more urgent; the range is PRIO_HIGHEST..PRIO_LOWEST from
 // kernel/psinfo.h.  This is the first syscall in this project that writes
 // kernel state rather than only observing it -- 23 through 28 are all
-// read-only.  There is no permission check (xv6 has no uid/gid); see the
-// comment on ksetprio() in proc.c.
+// read-only. Target identity is checked under its process lock.
 uint64
 sys_setprio(void)
 {
@@ -308,10 +309,7 @@ sys_tcsetpgrp(void)
 {
   int pgid;
   argint(0, &pgid);
-  if (pgid <= 0)
-    return -1;
-  tty_setpgid(pgid);
-  return 0;
+  return tty_setpgid(pgid);
 }
 
 uint64
@@ -358,4 +356,12 @@ sys_setgid(void)
   int gid;
   argint(0, &gid);
   return ksetgid(gid);
+}
+
+uint64
+sys_ttyecho(void)
+{
+  int enabled;
+  argint(0, &enabled);
+  return consoleecho(enabled);
 }

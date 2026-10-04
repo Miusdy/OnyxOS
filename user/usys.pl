@@ -66,3 +66,4 @@ entry("setuid");
 entry("setgid");
 entry("chmod");
 entry("chown");
+entry("ttyecho");

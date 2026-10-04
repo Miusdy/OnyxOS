@@ -23,6 +23,8 @@ void            bunpin(struct buf*);
 void            bio_stats(uint64*, uint64*);
 
 // console.c
+int             consoleecho(int);
+void            consoleforget(int);
 void            consoleinit(void);
 void            consoleintr(int);
 void            consputc(int);
@@ -115,7 +117,7 @@ int             ksigmask(uint);
 int             ksigreturn(void);
 int             signal_pending(struct proc*);
 void            signal_deliver(struct proc*);
-void            tty_setpgid(int);
+int             tty_setpgid(int);
 void            tty_interrupt(void);
 int             tty_signal(int);
 int             ksetprio(int, int);

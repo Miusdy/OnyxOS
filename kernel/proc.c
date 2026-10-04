@@ -32,10 +32,9 @@ ncpu_online(void)
   return __atomic_load_n(&ncpu_online_cnt, __ATOMIC_RELAXED);
 }
 
-// psinfo() fills a single kalloc page with one entry per process slot.
-// This fails to compile (negative array size) if that stops being true.
-typedef char
-  psinfo_fits_one_page[(NPROC * sizeof(struct psinfo) <= PGSIZE) ? 1 : -1];
+// Allocate separate pages; kalloc does not promise adjacent addresses.
+#define PS_PER_PAGE (PGSIZE / sizeof(struct psinfo))
+typedef char psinfo_fits_two_pages[(NPROC <= 2 * PS_PER_PAGE) ? 1 : -1];
 
 struct proc proc[NPROC];
 
@@ -56,6 +55,7 @@ extern char trampoline[]; // trampoline.S
 struct spinlock wait_lock;
 static struct spinlock tty_lock;
 static int tty_pgid;
+static int tty_uid;
 
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
@@ -429,6 +429,7 @@ void
 kexit(int status)
 {
   struct proc *p = myproc();
+  consoleforget(p->pid);
 
   if (p == initproc)
     panic("init exiting");
@@ -753,7 +754,8 @@ kkill(int pid)
 
   for (p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
-    if (p->pid == pid) {
+    if (p->pid == pid && p->state != UNUSED &&
+        (myproc()->uid == 0 || myproc()->uid == p->uid)) {
       p->killed = 1;
       if (p->state == SLEEPING || p->state == STOPPED) {
         // Wake a sleeping or stopped process.
@@ -776,7 +778,8 @@ ksignal(int pid, int sig)
     return -1;
   for (p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
-    if (p->pid == pid && p->state != UNUSED && p->state != ZOMBIE) {
+    if (p->pid == pid && p->state != UNUSED && p->state != ZOMBIE &&
+        (myproc()->uid == 0 || myproc()->uid == p->uid)) {
       p->pending |= 1U << sig;
       if (p->state == STOPPED && sig != 4)
         p->state = RUNNABLE;
@@ -792,8 +795,8 @@ ksignal(int pid, int sig)
   return -1;
 }
 
-int
-ksignalpg(int pgid, int sig)
+static int
+signalpg(int pgid, int sig, int uid)
 {
   int found = 0;
   struct proc *p;
@@ -801,7 +804,8 @@ ksignalpg(int pgid, int sig)
     return -1;
   for (p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
-    if (p->pgid == pgid && p->state != UNUSED && p->state != ZOMBIE) {
+    if (p->pgid == pgid && p->state != UNUSED && p->state != ZOMBIE &&
+        (uid == 0 || uid == p->uid)) {
       p->pending |= 1U << sig;
       if (p->state == STOPPED && sig != 4)
         p->state = RUNNABLE;
@@ -817,14 +821,38 @@ ksignalpg(int pgid, int sig)
 }
 
 int
+ksignalpg(int pgid, int sig)
+{
+  // Mixed groups receive a signal only at authorized members.
+  return signalpg(pgid, sig, myproc()->uid);
+}
+
+int
 ksetpgid(int pid, int pgid)
 {
   struct proc *p;
   if (pgid <= 0)
     return -1;
+  if (myproc()->uid != 0 && pgid != pid) {
+    int found = 0;
+    for (p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if (p->pgid == pgid && p->state != UNUSED && p->state != ZOMBIE) {
+        if (p->uid != myproc()->uid) {
+          release(&p->lock);
+          return -1;
+        }
+        found = 1;
+      }
+      release(&p->lock);
+    }
+    if (!found)
+      return -1;
+  }
   for (p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
-    if (p->pid == pid && p->state != UNUSED && p->state != ZOMBIE) {
+    if (p->pid == pid && p->state != UNUSED && p->state != ZOMBIE &&
+        (myproc()->uid == 0 || myproc()->uid == p->uid)) {
       p->pgid = pgid;
       release(&p->lock);
       return 0;
@@ -913,33 +941,52 @@ kwaitpg(int pgid, uint64 addr)
   }
 }
 
-void
+// A foreground group must exist, and non-root callers must own every
+// live member. Delivery rechecks uid, so a later identity change cannot
+// turn a terminal interrupt into a cross-user signal.
+int
 tty_setpgid(int pgid)
 {
+  struct proc *p;
+  int found = 0, uid = myproc()->uid;
+  if (pgid <= 0)
+    return -1;
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->pgid == pgid && p->state != UNUSED && p->state != ZOMBIE) {
+      if (uid != 0 && uid != p->uid) {
+        release(&p->lock);
+        return -1;
+      }
+      found = 1;
+    }
+    release(&p->lock);
+  }
+  if (!found)
+    return -1;
   acquire(&tty_lock);
   tty_pgid = pgid;
+  tty_uid = uid;
   release(&tty_lock);
+  return 0;
 }
 
 void
 tty_interrupt(void)
 {
-  int pgid;
-  acquire(&tty_lock);
-  pgid = tty_pgid;
-  release(&tty_lock);
-  if (pgid > 0)
-    ksignalpg(pgid, 2);
+  tty_signal(2);
 }
 
 int
 tty_signal(int sig)
 {
-  int pgid;
+  int pgid, uid;
   acquire(&tty_lock);
   pgid = tty_pgid;
+  uid = tty_uid;
   release(&tty_lock);
-  return pgid > 0 ? ksignalpg(pgid, sig) : -1;
+  // Interrupt context has no calling user identity.
+  return pgid > 0 ? signalpg(pgid, sig, uid) : -1;
 }
 
 int
@@ -1050,9 +1097,8 @@ ksigreturn(void)
 // Set the scheduling priority of process pid.  The caller has already
 // clamped prio to PRIO_HIGHEST..PRIO_LOWEST; see sys_setprio().
 //
-// xv6 has no uid/gid, so there is no permission check: any process may
-// change any other process priority.  That is a teaching
-// simplification, stated here on purpose rather than left implicit.
+// Only root or the same uid may change the target. Check under p->lock
+// so a recycled process slot cannot change identity between check and use.
 int
 ksetprio(int pid, int prio)
 {
@@ -1060,7 +1106,8 @@ ksetprio(int pid, int prio)
 
   for (p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
-    if (p->pid == pid && p->state != UNUSED) {
+    if (p->pid == pid && p->state != UNUSED &&
+        (myproc()->uid == 0 || myproc()->uid == p->uid)) {
       p->prio = prio;
       // Take effect at the next scheduling decision rather than waiting
       // for the aging pass to walk the number down.
@@ -1188,13 +1235,13 @@ either_copyin(void *dst, int user_src, uint64 src, uint64 len)
 // read the fields it protects (pid/state) and to get a consistent view of
 // the process-private fields (name/sz).  copyout is NOT done while
 // holding a lock: it can fault, which leads to kalloc() and thus to
-// kmem.lock, so instead we fill a kernel scratch page and copy it out
+// kmem.lock, so instead we fill two kernel scratch pages and copy them out
 // after dropping every lock.
 int
 psinfo(uint64 uaddr, int max)
 {
   struct proc *p, *cur = myproc();
-  struct psinfo *kbuf, *e;
+  struct psinfo *kbuf[2], *e;
   int n = 0, copy_n, r;
 
   if (max <= 0)
@@ -1202,17 +1249,23 @@ psinfo(uint64 uaddr, int max)
   if (max > NPROC)
     max = NPROC;
 
-  // Allocate scratch before taking any lock: kalloc() itself takes
-  // kmem.lock, and one page holds NPROC entries.
-  if ((kbuf = (struct psinfo *)kalloc()) == 0)
+  // Allocate before locking; unwind a partial allocation on failure.
+  if ((kbuf[0] = (struct psinfo *)kalloc()) == 0)
     return -1;
+  if ((kbuf[1] = (struct psinfo *)kalloc()) == 0) {
+    kfree(kbuf[0]);
+    return -1;
+  }
 
   acquire(&wait_lock);
-  e = kbuf;
   for (p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
     if (p->state != UNUSED) {
       if (n < max) {
+        e = &kbuf[n / PS_PER_PAGE][n % PS_PER_PAGE];
+        e->uid = p->uid;
+        e->gid = p->gid;
+        e->_pad = 0;
         e->pid = p->pid;
         e->ppid = p->parent ? p->parent->pid : 0;
         e->state = p->state;
@@ -1230,7 +1283,6 @@ psinfo(uint64 uaddr, int max)
         // name is a fixed 16 bytes and may have no NUL if exactly full,
         // so copy the whole field rather than using strlen.
         memmove(e->name, p->name, sizeof(p->name));
-        e++;
       }
       n++;
     }
@@ -1239,10 +1291,14 @@ psinfo(uint64 uaddr, int max)
   release(&wait_lock);
 
   copy_n = (n < max) ? n : max;
-  r = (copy_n == 0) ? 0
-                    : copyout(cur->pagetable, cur->sz, uaddr, (char *)kbuf,
-                              (uint64)copy_n * sizeof(struct psinfo));
-  kfree(kbuf);
+  int first = copy_n < PS_PER_PAGE ? copy_n : PS_PER_PAGE;
+  r = copyout(cur->pagetable, cur->sz, uaddr, (char *)kbuf[0],
+              first * sizeof(struct psinfo));
+  if (r == 0 && copy_n > first)
+    r = copyout(cur->pagetable, cur->sz, uaddr + first * sizeof(struct psinfo),
+                (char *)kbuf[1], (copy_n - first) * sizeof(struct psinfo));
+  kfree(kbuf[0]);
+  kfree(kbuf[1]);
   if (r < 0)
     return -1;
   return copy_n;

@@ -23,12 +23,19 @@ struct entry {
 static struct entry cmds[] = {
   // clang-format off
   {"system", "init", "",
-   "first user process; started by the kernel, then runs sh",
+   "first user process; started by the kernel, then runs login",
    "Not meant to be run by hand.", 0},
   {"system", "sh", "",
    "the shell itself; supports ; | & < > >> ( )",
    "Background: `cmd &'.  Redirect: `cmd > f', `cmd >> f', `cmd < f'.",
    0},
+
+  {"accounts", "login", "",
+   "authenticate before starting a shell", "Started by init; root only.", 1},
+  {"accounts", "passwd", "name",
+   "change a provisioned account password", "Root only; asks twice without echo.", 1},
+  {"accounts", "whoami", "",
+   "print the fixed account name or numeric uid", 0, 1},
 
   {"files & text", "cat", "[file ...]",
    "concatenate files and print; reads stdin if none", 0, 0},
@@ -54,7 +61,7 @@ static struct entry cmds[] = {
 
   {"processes", "ps", "",
    "snapshot the process table",
-   "Columns: pid ppid state vsz rss usr sys prio name; vsz/rss in KB.", 1},
+   "Columns: pid ppid uid gid state vsz rss usr sys prio name; vsz/rss in KB.", 1},
   {"processes", "top", "[refreshes]",
    "refresh the process table until interrupted",
    // Adjacent string literals concatenate, so this is still one
@@ -81,7 +88,7 @@ static struct entry cmds[] = {
    "Reports the online hart count, disk I/O and buffer-cache hits.", 1},
   {"system info", "dmesg", "",
    "replay the kernel log ring buffer",
-   "Only what printk() emitted; user output is not captured.", 1},
+   "Root only. Only what printk() emitted; user output is not captured.", 1},
 
   {"self-checks", "cputest", "[ticks]",
    "cross-check CPU accounting against uptime()",
@@ -109,6 +116,9 @@ static struct entry cmds[] = {
    "Run as root.  Makes fixtures in /permtest-dir, then probes them from "
    "a child that has dropped to uid 1001.", 1},
 
+  {"self-checks", "privtest", "",
+   "check cross-user controls, privileged operations and snapshots",
+   "Run as root; verifies UID 1001 versus UID 1002 and copyout cleanup.", 1},
   {"self-checks", "mixstress", "",
    "exercise concurrent fork, COW, pipes and files", 0, 1},
   {"tests", "testrun", "program [args...]",

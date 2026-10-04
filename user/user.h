@@ -37,6 +37,7 @@ int setgid(int);
 // owner or uid 0 may call it, and only uid 0 may call chown().
 int chmod(const char *, int);
 int chown(const char *, int, int);
+int ttyecho(int); // root-only password input echo control
 char *sys_sbrk(int, int);
 int pause(int);
 int uptime(void);

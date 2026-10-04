@@ -15,7 +15,9 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y gcc-riscv64-linux-gnu qemu-system-riscv clang-format bc
       - run: make fmt && git diff --exit-code
       - run: python3 test-harness.py
+      - run: python3 test-auth.py
       - run: make kernel/kernel fs.img
+      - run: python3 test-stage3.py
       - run: ./test-xv6.py dedicated
       - run: ./test-xv6.py usertests
       - run: ./test-xv6.py crash

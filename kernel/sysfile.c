@@ -146,7 +146,8 @@ sys_link(void)
   }
 
   ilock(ip);
-  if (ip->type == T_DIR) {
+  if (ip->type == T_DIR || (cred.uid != 0 && cred.uid != ip->uid &&
+                            !perm_ok(ip, cred, ACC_R | ACC_W))) {
     iunlockput(ip);
     end_op();
     return -1;
@@ -484,6 +485,8 @@ sys_mknod(void)
   char path[MAXPATH];
   int major, minor;
 
+  if (myproc()->uid != 0)
+    return -1;
   begin_op();
   argint(1, &major);
   argint(2, &minor);

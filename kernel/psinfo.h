@@ -30,6 +30,9 @@
 #define PSTATE_ZOMBIE   6
 
 struct psinfo {
+  ushort uid;
+  ushort gid;
+  uint _pad;
   int pid;               // process id
   int ppid;              // parent process id (0 if none)
   int state;             // one of the PSTATE_* values above
@@ -41,15 +44,8 @@ struct psinfo {
   char name[PINFO_NAME]; // process name, always NUL-terminated
 };
 
-// psinfo() snapshots one struct psinfo per process slot into a single
-// kalloc page, so NPROC * sizeof(struct psinfo) must fit in a page.
-// kernel/proc.c enforces this at compile time.  sizeof is currently 64
-// bytes (64 * NPROC(64) = 4096 = PGSIZE) -- the layout has NO headroom
-// left: another field would break the assertion, and adding one would
-// force the snapshot to span two pages.
-//
-// Batch 4 added rss, which took the struct from 56 to exactly 64 bytes.
-// All fields are 8-byte aligned and there is no trailing padding, so any
-// future field must displace something else or the one-page rule dies.
+// 72 bytes per entry. The kernel snapshots into two independently allocated
+// pages, then copies packed entries into the user's buffer. Statistics are
+// public across users; kernel logs are restricted to uid 0.
 
 #endif // XV6_PSINFO_H

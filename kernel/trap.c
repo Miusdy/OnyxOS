@@ -38,6 +38,7 @@ uint64
 usertrap(void)
 {
   int which_dev = 0;
+  uint64 cause = r_scause(), faultva = r_stval();
 
   if ((r_sstatus() & SSTATUS_SPP) != 0)
     panic("usertrap: not from user mode");
@@ -51,7 +52,7 @@ usertrap(void)
   // save user program counter.
   p->trapframe->epc = r_sepc();
 
-  if (r_scause() == 8) {
+  if (cause == 8) {
     // system call
 
     if (killed(p))
@@ -68,16 +69,18 @@ usertrap(void)
     syscall();
   } else if ((which_dev = devintr()) != 0) {
     // ok
-  } else if ((r_scause() == 15 || r_scause() == 13) &&
-             vmfault(p->pagetable, p->sz, r_stval(),
-                     (r_scause() == 13) ? 1 : 0) != 0) {
-    // page fault on lazily-allocated page
-  } else if (r_scause() == 15 &&
-             cowfault(p->pagetable, p->sz, r_stval()) != 0) {
-    // store to a page shared by a copy-on-write fork; it is private now
+  } else if (cause == 15 || cause == 13) {
+    // File-backed faults can sleep for disk I/O. Save trap CSRs before
+    // enabling interrupts: another trap may overwrite them while we sleep.
+    intr_on();
+    if (vmfault(p->pagetable, p->sz, faultva, cause == 13) == 0 &&
+        !(cause == 15 && cowfault(p->pagetable, p->sz, faultva) != 0)) {
+      printk("usertrap(): invalid access pid=%d va=0x%lx\n", p->pid, faultva);
+      setkilled(p);
+    }
   } else {
-    printk("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
-    printk("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
+    printk("usertrap(): unexpected scause 0x%lx pid=%d\n", cause, p->pid);
+    printk("            sepc=0x%lx stval=0x%lx\n", p->trapframe->epc, faultva);
     setkilled(p);
   }
 

@@ -67,3 +67,6 @@ entry("setgid");
 entry("chmod");
 entry("chown");
 entry("ttyecho");
+
+entry("mmap");
+entry("munmap");

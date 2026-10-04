@@ -311,11 +311,17 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
+  return uvmcopyrange(old, new, 0, sz);
+}
+
+int
+uvmcopyrange(pagetable_t old, pagetable_t new, uint64 start, uint64 end)
+{
   pte_t *pte;
   uint64 pa, i, j;
   uint flags;
 
-  for (i = 0; i < sz; i += PGSIZE) {
+  for (i = start; i < end; i += PGSIZE) {
     if ((pte = walk(old, i, 0)) == 0)
       continue; // page table entry hasn't been allocated
     if ((*pte & PTE_V) == 0)
@@ -351,11 +357,11 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 
 err:
   // Unmapping the child drops the references this fork just added...
-  uvmunmap(new, 0, i / PGSIZE, 1);
+  uvmunmap(new, start, (i - start) / PGSIZE, 1);
   // ...and that is what makes the parent's pages safe to look at again: a
   // page belongs to the parent alone only once its count is back down to
   // one, so a page an earlier fork still shares has to stay PTE_COW.
-  for (j = 0; j < i; j += PGSIZE) {
+  for (j = start; j < i; j += PGSIZE) {
     pte_t *ppte = walk(old, j, 0);
     if (ppte != 0 && (*ppte & PTE_COW) != 0 &&
         krefcnt((void *)PTE2PA(*ppte)) == 1)
@@ -521,6 +527,12 @@ vmfault(pagetable_t pagetable, uint64 psz, uint64 va, int read)
 {
   uint64 mem;
 
+  if (va >= psz && va >= MMAPBASE && va < MMAPEND) {
+    mem = vmafault(pagetable, va, read);
+    if (mem)
+      __atomic_fetch_add(&vmfault_cnt, 1, __ATOMIC_RELAXED);
+    return mem;
+  }
   if (va >= psz)
     return 0;
   va = PGROUNDDOWN(va);
@@ -572,12 +584,13 @@ cowfault(pagetable_t pagetable, uint64 psz, uint64 va)
   uint64 pa, mem;
   uint flags;
 
-  if (va >= psz)
+  if (va >= MAXVA)
     return 0;
   va = PGROUNDDOWN(va);
 
   pte = walk(pagetable, va, 0);
-  if (pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_COW) == 0)
+  if (pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_COW) == 0 ||
+      (*pte & PTE_U) == 0)
     return 0;
 
   pa = PTE2PA(*pte);

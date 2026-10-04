@@ -230,3 +230,11 @@ void            virtio_disk_intr(void);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x) / sizeof((x)[0]))
+
+// mmap.c
+uint64 vmafault(pagetable_t, uint64, int);
+int vmacopy(struct proc *, struct proc *);
+void vmaclear(struct proc *);
+int vmaprefault(uint64, uint64, int);
+int uvmcopyrange(pagetable_t, pagetable_t, uint64, uint64);
+uint64 vmaheaplimit(struct proc *);

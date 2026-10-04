@@ -12,6 +12,7 @@ OBJS = \
   $K/string.o \
   $K/main.o \
   $K/vm.o \
+  $K/mmap.o \
   $K/proc.o \
   $K/swtch.o \
   $K/trampoline.o \
@@ -175,6 +176,7 @@ UPROGS=\
 	$U/_passwd\
 	$U/_whoami\
 	$U/_privtest\
+	$U/_mmaptest\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)

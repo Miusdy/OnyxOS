@@ -1,5 +1,7 @@
 # 批次 5 实施计划 / Batch 5 Implementation Plan
 
+> 历史设计记录：正文中的“当前”、工具链、镜像容量、结构大小及源码行号对应批次 4–8 的开发时点，不代表最新版本。现状以 [miniOS 路线图](minios-roadmap.md)、[阶段三验证](stage3-validation.md)和[阶段四验证](stage4-validation.md)为准；历史分支归属见[完整性审计](integrity-audit.md)。
+
 > 本文档针对 `README.md` 所声明的批次 1–4 能力做一次逐项核对，并把核对中发现的三处落差整理为批次 5 的可执行范围。
 >
 > 状态：**批次 5 全部完成，已在 WSL 验证通过。** 本机无 RISC-V 工具链，所有改动均由用户在 WSL 中 `make` 编译并跑通 `usertests`。

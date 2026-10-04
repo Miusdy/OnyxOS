@@ -3,7 +3,9 @@
 日期：2026-10-04
 评估基线：`7311917`（阶段三已完成）；本次选择阶段四虚拟内存方向。
 状态：阶段一、二、三已实施并通过本地验收；阶段四选择虚拟内存方向，已实现并通过本地验收。
-验证记录见 [阶段一验证接口与结果](stage1-validation.md) 、[阶段三验证接口与结果](stage3-validation.md) 和 [阶段四验证接口与结果](stage4-validation.md)。Linux CI 矩阵已配置，远端执行结果以 GitHub Actions 为准。
+验证记录见 [阶段一验证接口与结果](stage1-validation.md)、[阶段三验证接口与结果](stage3-validation.md) 和 [阶段四验证接口与结果](stage4-validation.md)。Linux CI 矩阵已配置，远端执行结果以 GitHub Actions 为准。
+
+最新分支、PR、文档与功能复核见[项目完整性审计](integrity-audit.md)。PR #4 的 portable-agent-os 是独立 Linux 实验，不是以下阶段的依赖或遗漏交付。
 
 ## 1. 目标与范围
 

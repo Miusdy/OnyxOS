@@ -36,7 +36,7 @@
 
 | 事实 | 位置 |
 | --- | --- |
-| `struct dinode` = type/major/minor/nlink(4×short) + size(4) + addrs[13](52) = **恰好 64 字节** | `kernel/fs.h` |
+| `struct dinode` = type/major/minor/nlink(4×short) + size(4) + `addrs[13]`（52 字节） = **恰好 64 字节** | `kernel/fs.h` |
 | **硬约束**：`assert((BSIZE % sizeof(struct dinode)) == 0)` ⇒ sizeof(dinode) 必须整除 1024，只能是 64、128…**不能是 68/72** | `mkfs/mkfs.c:88` |
 | `IPB = BSIZE / sizeof(dinode)` = 16（方案 A 下不变） | `kernel/fs.h` |
 | 内存中的 `struct inode` 是 dinode 的副本，加字段要同步 | `kernel/file.h` |

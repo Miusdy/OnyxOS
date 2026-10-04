@@ -79,3 +79,21 @@ Git `merge-tree --write-tree origin/main 21245c8` 可以无文本冲突地构造
 复现失败记录为 `1791096541947558000-summary.json`（sigaction）和 `1791096496972299000-summary.json`（mmap）；最终完整 usertests 汇总为 `1791096725877948000-summary.json`（单核）、`1791096870129770000-summary.json`（三核）。记录位于隔离工作树的 `test-results/`，不进入版本控制。
 
 合并校验流程要求修复分支的 Linux 单核/三核及 macOS CI 通过，再合并主线；合并后另核验主线准确提交的完整 CI，不把分支通过等同于合并后通过。远端结果保存在 [GitHub Actions](https://github.com/Miusdy/OnyxOS/actions/workflows/test.yml)，可按本审计对应 PR 与合并提交查询。
+
+## 合并后复核（2026-10-04）
+
+复核基线为上游 `main` 的 `bfafc0f991b1a79af93ddaea84a86169b3388508`。在初次审计之后，以下三个 PR 已合并；此前的阶段四实现和本次内核修复均包含在该主线中。
+
+| PR | 合并提交 | 结果 |
+| --- | --- | --- |
+| [#9](https://github.com/Miusdy/OnyxOS/pull/9) | `43319ea` | 信号地址和最大文件映射边界修复、回归用例及审计文档；[合并后 CI](https://github.com/Miusdy/OnyxOS/actions/runs/37184805775) 三项全部成功 |
+| [#10](https://github.com/Miusdy/OnyxOS/pull/10) | `2c94116` | 批次说明移入 `docs/batches.md`；与迁移前逐项核对，原正文保留 |
+| [#11](https://github.com/Miusdy/OnyxOS/pull/11) | `bfafc0f` | 新增开发环境约定 `AGENTS.md`；未改动内核、用户程序、构建和测试代码 |
+
+截至该基线共 11 个 PR：10 个已合并，#4 关闭未合并，没有待合并 PR。逐项检查已合并 PR 的 head 和 merge commit，全部是当前主线的祖先。
+
+同时通过 GitHub compare 对照上游与 fork `Ella-101/HachileiOS` 的全部现存分支：上游 3 个开发分支、fork 的 `batch4`、`batch6`、`batch7`、`batch8`、`batch9`、`batch11`、`batch12` 及 fork `main`，相对于该基线的 `ahead_by` 均为 0。唯一例外仍是 `batch10-portable-agent-os`，独有 1 个提交 `21245c8`，与上述 #4 判定一致。fork 的旧 `main` 落后不构成主线内容缺失。
+
+主线准确提交 `bfafc0f` 的 [GitHub Actions](https://github.com/Miusdy/OnyxOS/actions/runs/37192830284) 已全部完成并成功：Linux 单核、三核分别通过格式、宿主错误路径、PBKDF2、构建、阶段三认证、11 个专用程序、完整 usertests 和三类崩溃恢复测试；macOS 通过内核与文件系统镜像构建。此结果来自合并后的主线，不是仅引用 PR 分支结果。
+
+文档复核还修正 README 遗留的程序计数：`UPROGS` 实为 44 项，`help` 索引为 43 条，唯一未列入索引的用户程序是 `help` 自身。此次补记与计数修正不改变运行行为或既有测试断言。

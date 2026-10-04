@@ -1,4 +1,5 @@
 #include "kernel/types.h"
+#include "kernel/riscv.h"
 #include "user/user.h"
 
 static volatile int caught;
@@ -15,10 +16,26 @@ main(void)
 {
   int child, status;
   uint mask = 1U << SIGTERM;
+  uint64 invalid[] = {MAXVA - 1, MAXVA, MAXVA + PGSIZE, (uint64)-3,
+                      (uint64)&caught};
 
-  if (sigaction(SIGTERM, handler) < 0 || sigmask(mask) < 0 ||
-      signal(getpid(), SIGTERM) < 0 || caught != 0 || sigmask(0) < 0 ||
-      caught != SIGTERM) {
+  if (sigaction(SIGTERM, SIG_DFL) < 0 || sigaction(SIGTERM, SIG_IGN) < 0 ||
+      signal(getpid(), SIGTERM) < 0 || caught != 0 ||
+      sigaction(SIGTERM, handler) < 0) {
+    fprintf(2, "sigtest: signal disposition setup failed\n");
+    exit(1);
+  }
+  for (int i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+    if (sigaction(SIGTERM, (void (*)(int))invalid[i]) != -1) {
+      fprintf(2, "sigtest: invalid handler accepted\n");
+      exit(1);
+    }
+  }
+
+  // Rejected addresses must leave the installed handler intact. Successful
+  // signal delivery and the following fork/wait also exercise continued use.
+  if (sigmask(mask) < 0 || signal(getpid(), SIGTERM) < 0 || caught != 0 ||
+      sigmask(0) < 0 || caught != SIGTERM) {
     fprintf(2, "sigtest: signal mask or sigreturn failed\n");
     exit(1);
   }

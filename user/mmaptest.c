@@ -1,5 +1,6 @@
 #include "kernel/types.h"
 #include "kernel/stat.h"
+#include "kernel/fs.h"
 #include "kernel/fcntl.h"
 #include "user/user.h"
 
@@ -238,6 +239,38 @@ files(void)
   check(munmap(p, PAGE) == 0, "last mapping releases inode");
 }
 
+// MAXFILE is not page aligned: its final 2 KiB must remain mappable.
+static void
+maxfile(void)
+{
+  uint size = MAXFILE * BSIZE;
+  uint last = (size - 1) / PAGE * PAGE;
+  unlink("mmap.max");
+  int fd = open("mmap.max", O_CREATE | O_RDWR);
+  check(fd >= 0, "create maximum file");
+  memset(data, 'f', sizeof(data));
+  for (uint off = 0; off < size; off += PAGE) {
+    uint n = size - off;
+    if (n > PAGE)
+      n = PAGE;
+    if (off == last)
+      data[n - 1] = 'z';
+    check(write(fd, data, n) == n, "write maximum file");
+  }
+  char *p = mmap(0, size, PROT_READ, MAP_PRIVATE, fd, 0);
+  check(p != MAP_FAILED, "map complete maximum file");
+  check(p[size - 1] == 'z' && p[size] == 0, "maximum file tail and padding");
+  check(munmap(p, size) == 0, "unmap maximum file");
+  p = mmap(0, size - last, PROT_READ, MAP_PRIVATE, fd, last);
+  check(p != MAP_FAILED && p[size - last - 1] == 'z' && p[size - last] == 0,
+        "map maximum file final partial page");
+  check(munmap(p, size - last) == 0, "unmap maximum file tail");
+  check(mmap(0, PAGE, PROT_READ, MAP_PRIVATE, fd, last + PAGE) == MAP_FAILED,
+        "reject page beyond filesystem mapping limit");
+  close(fd);
+  check(unlink("mmap.max") == 0, "maximum file cleanup");
+}
+
 static void
 lifecycle(void)
 {
@@ -331,6 +364,7 @@ main(int argc, char **argv)
   invalid();
   anonymous();
   files();
+  maxfile();
   lifecycle();
   concurrent();
   pressure();

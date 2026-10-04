@@ -1059,9 +1059,12 @@ ksigaction(int sig, uint64 handler)
   if (sig < 1 || sig > NSIG || sig == 3 || sig == 4)
     return -1;
   if (handler != (uint64)-1 && handler != (uint64)-2) {
+    // walk() panics on addresses outside Sv39. Reject user-supplied
+    // handlers before asking it to inspect the page table.
+    if (handler >= MAXVA || handler >= p->sz)
+      return -1;
     pte = walk(p->pagetable, handler, 0);
-    if (handler >= p->sz || pte == 0 || !(*pte & PTE_V) || !(*pte & PTE_U) ||
-        !(*pte & PTE_X))
+    if (pte == 0 || !(*pte & PTE_V) || !(*pte & PTE_U) || !(*pte & PTE_X))
       return -1;
   }
   acquire(&p->lock);

@@ -40,7 +40,6 @@ sys_mmap(void)
       (flags != MAP_PRIVATE && flags != (MAP_PRIVATE | MAP_ANONYMOUS)) ||
       off % PGSIZE)
     return -1;
-  len = PGROUNDUP(len);
   if (flags & MAP_ANONYMOUS) {
     if (fd != -1 || off != 0)
       return -1;
@@ -55,6 +54,9 @@ sys_mmap(void)
     if (!regular)
       return -1;
   }
+  // Validate file bytes before rounding: MAXFILE may end in half a page.
+  // File loading zero-fills the part of that final page beyond EOF.
+  len = PGROUNDUP(len);
   for (int i = 0; i < NVMA; i++)
     if (p->vmas[i].end == 0) {
       slot = i;

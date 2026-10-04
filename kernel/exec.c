@@ -77,7 +77,8 @@ kexec(char *path, char **argv)
       continue;
     if (ph.memsz < ph.filesz)
       goto bad;
-    if (ph.vaddr + ph.memsz < ph.vaddr)
+    if (ph.vaddr + ph.memsz < ph.vaddr ||
+        ph.vaddr + ph.memsz > TRAPFRAME - (USERSTACK + 1) * PGSIZE)
       goto bad;
     if (ph.vaddr % PGSIZE != 0)
       goto bad;
@@ -143,6 +144,8 @@ kexec(char *path, char **argv)
   safestrcpy(p->name, last, sizeof(p->name));
 
   // Commit to the user image.
+  vmaclear(p);
+  acquire(&p->lock);
   oldpagetable = p->pagetable;
   p->pagetable = pagetable;
   p->sz = sz;
@@ -152,6 +155,7 @@ kexec(char *path, char **argv)
     if (p->sighandlers[i] != (uint64)-1)
       p->sighandlers[i] = 0;
   p->sigframe_active = 0;
+  release(&p->lock);
   proc_freepagetable(oldpagetable, oldsz);
 
   return argc; // this ends up in a0, the first argument to main(argc, argv)

@@ -12,8 +12,8 @@ int
 fetchaddr(uint64 addr, uint64 *ip)
 {
   struct proc *p = myproc();
-  if (addr >= p->sz ||
-      addr + sizeof(uint64) > p->sz) // both tests needed, in case of overflow
+  if (addr >= MAXVA ||
+      addr + sizeof(uint64) > MAXVA) // both tests needed, in case of overflow
     return -1;
   if (copyin(p->pagetable, p->sz, (char *)ip, addr, sizeof(*ip)) != 0)
     return -1;
@@ -79,6 +79,9 @@ argstr(int n, char *buf, int max)
   argaddr(n, &addr);
   return fetchstr(addr, buf, max);
 }
+
+extern uint64 sys_mmap(void);
+extern uint64 sys_munmap(void);
 
 // Prototypes for the functions that handle system calls.
 extern uint64 sys_fork(void);
@@ -169,6 +172,8 @@ static uint64 (*syscalls[])(void) = {
   [SYS_chmod] = sys_chmod,
   [SYS_chown] = sys_chown,
   [SYS_ttyecho] = sys_ttyecho,
+  [SYS_mmap] = sys_mmap,
+  [SYS_munmap] = sys_munmap,
   // clang-format on
 };
 

@@ -45,3 +45,6 @@
 #define SYS_chmod     44
 #define SYS_chown     45
 #define SYS_ttyecho   46
+
+#define SYS_mmap   47
+#define SYS_munmap 48

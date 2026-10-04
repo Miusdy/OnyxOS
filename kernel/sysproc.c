@@ -35,6 +35,8 @@ sys_wait(void)
 {
   uint64 p;
   argaddr(0, &p);
+  if (p && vmaprefault(p, sizeof(int), 1) < 0)
+    return -1;
   return kwait(p, 0, 0);
 }
 
@@ -48,6 +50,10 @@ sys_waitx(void)
   argaddr(0, &status);
   argaddr(1, &utime);
   argaddr(2, &ktime);
+  if ((status && vmaprefault(status, sizeof(int), 1) < 0) ||
+      (utime && vmaprefault(utime, sizeof(uint64), 1) < 0) ||
+      (ktime && vmaprefault(ktime, sizeof(uint64), 1) < 0))
+    return -1;
   return kwait(status, utime, ktime);
 }
 
@@ -72,7 +78,7 @@ sys_sbrk(void)
     // memory, vmfault() will allocate it.
     if (addr + n < addr)
       return -1;
-    if (addr + n > TRAPFRAME)
+    if (addr + n > vmaheaplimit(myproc()))
       return -1;
     myproc()->sz += n;
   }
@@ -319,6 +325,8 @@ sys_waitpg(void)
   uint64 status;
   argint(0, &pgid);
   argaddr(1, &status);
+  if (status && vmaprefault(status, sizeof(int), 1) < 0)
+    return -1;
   return kwaitpg(pgid, status);
 }
 

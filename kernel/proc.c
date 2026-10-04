@@ -331,7 +331,7 @@ growproc(int n)
 
   sz = p->sz;
   if (n > 0) {
-    if (sz + n > TRAPFRAME) {
+    if (sz + n > vmaheaplimit(p)) {
       return -1;
     }
     if ((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
@@ -365,6 +365,11 @@ kfork(void)
     return -1;
   }
   np->sz = p->sz;
+  if (vmacopy(p, np) < 0) {
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
   np->pgid = p->pgid;
   // Identity is inherited, not reset.  A child of a process that dropped
   // its privilege must not be born as root, or the drop would last only
@@ -433,6 +438,8 @@ kexit(int status)
 
   if (p == initproc)
     panic("init exiting");
+
+  vmaclear(p);
 
   // Close all open files.
   for (int fd = 0; fd < NOFILE; fd++) {
@@ -1275,7 +1282,9 @@ psinfo(uint64 uaddr, int max)
         // cannot be torn down underneath us.  This is a tree walk, not
         // one walk() per virtual page, because sz is handed out lazily
         // and may describe far more address space than is mapped.
-        e->rss = vm_rss(p->pagetable, p->sz);
+        e->rss = vm_rss(p->pagetable, TRAPFRAME);
+        for (int v = 0; v < NVMA; v++)
+          e->sz += p->vmas[v].end - p->vmas[v].start;
         // Updated lock-free by whichever hart is running p, so read
         // them with relaxed atomics for a consistent snapshot.
         e->u_ticks = __atomic_load_n(&p->u_ticks, __ATOMIC_RELAXED);

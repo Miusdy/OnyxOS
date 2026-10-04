@@ -8,11 +8,13 @@
 
 本项目以 MIT 6.1810 教学操作系统 **xv6-riscv**（`riscv` 分支，基线 HEAD `9e3161a`）为起点，逐步演进为一个 "miniOS"。目标不是做一个"看起来像操作系统"的演示，而是以**可快速追加、可独立验证**的小步前进方式，补全操作系统概念（进程、内存、锁、日志、CPU 统计），并在每一步都保留真实的工程权衡。
 
-### 当前进度（2026-10-03）
+### 当前进度（2026-10-04）
 
 已完成批次 1–8，以及 miniOS 路线图的**阶段一：自动化验证**和**阶段二：信号与终端作业控制**。阶段二新增最小信号接口、进程组、Ctrl-C/Ctrl-Z 前台作业控制、Shell 的 `jobs`/`fg`/`bg`，以及 `sigtest`。
 
 批次 11 已实现**阶段三：用户身份与权限**：UID/GID、文件与目录权限、跨用户进程控制限制、特权设备/日志操作，以及口令认证登录和 root 改密。验收结果见[阶段三验证记录](docs/stage3-validation.md)。
+
+阶段四已选择**虚拟内存方向**：新增 `mmap`/`munmap`、匿名与文件私有映射、按需加载、映射页 COW 和 `mmaptest`。单核/三核各 10 轮专项、完整 `usertests`、崩溃恢复及账户回归均通过，详见[阶段四验证记录](docs/stage4-validation.md)。
 
 阶段一验收通过：19 项宿主测试、单核/三核各 10 轮共 120 项专用测试、
 两种配置的完整 `usertests` 和全部崩溃恢复测试。阶段二单核/三核专用集合、
@@ -80,6 +82,7 @@ make clean         # 清理构建产物
 | `idtest` | 身份规则的自检程序：fork 继承、exec 保留、降权不可逆 |
 | `permtest` | 权限判定的自检程序，以负向用例为主 |
 | `privtest` | 跨用户进程控制、特权操作、跨页进程快照和失败路径自检 |
+| `mmaptest` | 匿名/文件私有映射、按需加载、COW、解除映射与 OOM 回收自检 |
 | `login` | 由 init 启动的口令认证入口；直接执行要求 root |
 | `passwd NAME` | root 修改预置账户口令，需两次输入一致 |
 | `whoami` | 显示预置账户名，其他 UID 显示数值 |
@@ -494,8 +497,10 @@ vm_rss(pagetable_t pagetable, uint64 sz)
 | 44 | `SYS_chmod` | `int chmod(const char *path, int mode)` | `0`，或 `-1`（非属主且非 uid 0） |
 | 45 | `SYS_chown` | `int chown(const char *path, int uid, int gid)` | `0`，或 `-1`（仅 uid 0） |
 | 46 | `SYS_ttyecho` | `int ttyecho(int enabled)` | root 切换口令输入回显，进程退出自动恢复 |
+| 47 | `SYS_mmap` | `void *mmap(void *addr, uint64 len, int prot, int flags, int fd, uint64 off)` | 创建按需加载的匿名或文件私有映射 |
+| 48 | `SYS_munmap` | `int munmap(void *addr, uint64 len)` | 解除整个或部分映射，失败时返回 -1 |
 
-编号定义在 `kernel/syscall.h`，分发表在 `kernel/syscall.c`，实现在 `kernel/sysproc.c`，用户桩由 `user/usys.pl` 生成。
+编号定义在 `kernel/syscall.h`，分发表在 `kernel/syscall.c`，实现在 `kernel/sysproc.c`、`kernel/sysfile.c` 和 `kernel/mmap.c`，用户桩由 `user/usys.pl` 生成。
 
 ---
 
@@ -593,13 +598,14 @@ python3 test-harness.py                        # 宿主错误路径回归
 ./test-xv6.py dedicated --cpus 3 --repeat 10
 ./test-xv6.py cowtest --cpus 3                  # 单个专用测试
 ./test-xv6.py sigtest --cpus 1 --repeat 3      # 信号与进程组专项回归
+./test-xv6.py mmaptest --cpus 3 --repeat 10    # 映射、COW 和资源回收专项
 ./test-xv6.py usertests --cpus 1               # 完整回归
 ./test-xv6.py usertests --cpus 3
 ./test-xv6.py crash --cpus 1
 ./test-xv6.py crash --cpus 3
 ```
 
-`dedicated` 包含 cowtest、kmemtest、waitxtest、cputest、priotest、idtest、permtest、privtest、mixstress、sigtest。所有 QEMU 测试先认证为 root。
+`dedicated` 包含 cowtest、kmemtest、waitxtest、cputest、priotest、idtest、permtest、privtest、mmaptest、mixstress、sigtest。所有 QEMU 测试先认证为 root。
 
 阶段三另有 `python3 test-auth.py`（哈希参考校验）和 `python3 test-stage3.py --cpus 1` / `--cpus 3`（真实登录、退避、改密、双向文件隔离、重启持久性、旧格式拒绝、损坏账户拒绝）。需要 Python ≥ 3.11，macOS 可用 `python3.12`。测试会重建 `fs.img`，必须先备份需要保留的数据；同一 checkout 的 QEMU 测试不得并发执行。
 每个专用测试默认超时 120 秒，可用 `--timeout` 调整；完整 usertests 为
@@ -675,7 +681,7 @@ data   blocks  1953  1281  672
 inodes  200 total, 32 used, 168 free
 ```
 
-上面是早期版本镜像首次启动后的历史示例（当时根目录有 29 个用户程序）。当前 `FSSIZE = 3200`，有 43 个用户程序，实际余量见批次 11 的镜像预算；历史数字不代表当前构建。
+上面是早期版本镜像首次启动后的历史示例（当时根目录有 29 个用户程序）。当前 `FSSIZE = 3200`，有 44 个用户程序，实际余量见批次 11 的镜像预算；历史数字不代表当前构建。
 
 两种口径共享同一个 free 值：元数据块全部标记为已用，空闲块不可能落在元数据区，所以"整盘"与"数据块"两种视角下的 free 必定相同——这不是打印错误。
 
@@ -754,6 +760,23 @@ kmemtest: OK (conserved, no leak over 3 rounds)
 
 ---
 
+## 虚拟内存映射（阶段四）
+
+`mmap(0, length, prot, flags, fd, offset)` 返回内核选择的页对齐地址，失败返回 `MAP_FAILED`；`munmap(addr, length)` 成功返回 0。常量由 `user/user.h` 引入。
+
+```c
+char *p = mmap(0, 8192, PROT_READ | PROT_WRITE,
+               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+if (p != MAP_FAILED) {
+  p[4096] = 'A';  // 首次访问才分配零页
+  munmap(p, 8192);
+}
+```
+
+文件映射用 `MAP_PRIVATE`、可读普通文件 fd 和页对齐偏移，首次访问按页读取；私有写入不回写文件，关闭 fd 或 unlink 后映射仍有效。fork 对已加载可写页使用 COW，exec 成功和 exit 自动释放映射。最后一个文件页的尾部填零，整页位于 EOF 之后的访问失败。
+
+每进程 16 个区域、单次最多 64 MiB，地址区间为 1–2 GiB，映射放在现有堆之后，堆增长不能越过现存映射；无映射时仍支持原有大范围惰性堆。支持只读和读写映射，所有映射不可执行；不支持共享映射、写回、固定地址、`mprotect` 或 ELF 按需执行。解除映射可裁剪或拆分一个区域；中间拆分需要空槽。完整的并发、错误和文件变化语义见[阶段四验证记录](docs/stage4-validation.md)。
+
 ## 已知限制
 
 - 教学配置为最多 64 个进程、每进程 16 个文件描述符、`FSSIZE = 3200` 的文件系统（3.125 MiB，数据区 3153 块）；扩大容量需要同时评估日志、缓存和内存。
@@ -779,7 +802,7 @@ kmemtest: OK (conserved, no leak over 3 rounds)
 - **进程控制按 UID 授权**：同 UID 或 root 可操作目标，GID 不授予进程控制权。
 - **优先级范围刻意压窄（0..9）**：不同于 nice(1) 的 -20..19，窄范围让老化在可观测的时间内生效；代价是"优先级"只能表达一档粗略的差别。
 - **`psinfo()` 的成本随进程规模增长**：快照期间会对每个进程持 `p->lock` 遍历页表树，因此映射页很多的进程会让 `psinfo()` 变慢，而 `top` 每轮都要做一次。这里不能改成「先释放锁再遍历」——那样页表可能被并发释放；这是必要权衡，不是疏漏。
-- **RSS 是即时快照，且不区分共享页**：`rss` 统计的是快照瞬间低于 `sz` 的已映射页，批次 8 的共享页会被计入**每个**映射它的进程 —— 与传统 `top` 一致，但意味着 `ps` 里两个进程的 `rss` 相加并不等于它们实际占用的物理内存。要看真实占用，请用 `sysinfo` 的 `pages_shared`。
+- **RSS 是即时快照，且不区分共享页**：`rss` 统计的是快照瞬间程序、堆和 mmap 区域的驻留页，批次 8 的共享页会被计入**每个**映射它的进程 —— 与传统 `top` 一致，但意味着 `ps` 里两个进程的 `rss` 相加并不等于它们实际占用的物理内存。要看真实占用，请用 `sysinfo` 的 `pages_shared`。
 - **`struct psinfo` 跨两页快照**：每项 72 字节；内核分配失败和用户拷贝失败均回收临时页。
 - **`waitx` 的账目可能少一格 tick**：冻结发生在退出路径末尾，此后到 `sched()` 之间若有定时器中断，那一格不会被任何人记录。这是 tick 级采样精度的固有边界。
 - **CPU 时间是采样得到**：内核把 tick 记给被中断的那个进程，因此单次连续占用不足 1 tick（100 ms）的进程可能显示为 0。
@@ -792,7 +815,7 @@ kmemtest: OK (conserved, no leak over 3 rounds)
 
 已完成批次 1–8 和批次 11 的五个实施批次，身份、文件权限、特权边界与认证登录见[批次 11](#批次-11--用户身份与权限)及[阶段三验证记录](docs/stage3-validation.md)。
 
-[miniOS 路线图](docs/minios-roadmap.md) 的阶段一至三已实施并通过本地验收，命令与结果见各阶段验证记录。阶段四的虚拟内存、存储和网络等扩展仍单独选型。
+[miniOS 路线图](docs/minios-roadmap.md) 的阶段一至三已实施并通过本地验收，命令与结果见各阶段验证记录。阶段四选择虚拟内存方向，已实现匿名/文件私有映射与按需加载；接口、限制及验收见[阶段四验证记录](docs/stage4-validation.md)。存储、网络、用户线程和内存回收仍是独立候选。
 
 ---
 

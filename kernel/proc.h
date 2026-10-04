@@ -1,3 +1,5 @@
+#include "mman.h"
+
 // Saved registers for kernel context switches.
 struct context {
   uint64 ra;
@@ -89,6 +91,12 @@ struct cred {
   ushort gid;
 };
 
+struct vma {
+  uint64 start, end, offset;
+  int prot;
+  struct file *file; // Owns a reference, independent of the original fd.
+};
+
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -128,6 +136,7 @@ struct proc {
   // these are private to the process, so p->lock need not be held.
   uint64 kstack; // Virtual address of kernel stack
   uint64 sz;     // Size of process memory (bytes)
+  struct vma vmas[NVMA];
   // CPU time, in timer ticks.  Only the hart currently running this
   // process updates them (from clockintr()), so there is a single
   // writer and p->lock is not needed; see clockintr() in trap.c.

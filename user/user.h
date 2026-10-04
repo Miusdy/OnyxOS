@@ -90,3 +90,7 @@ void printf(const char *, ...) __attribute__((format(printf, 1, 2)));
 // umalloc.c
 void *malloc(uint);
 void free(void *);
+
+#include "kernel/mman.h"
+void *mmap(void *, uint64, int, int, int, uint64);
+int munmap(void *, uint64);

@@ -26,6 +26,7 @@ OnyxOS/
 ├── test-harness.py     宿主错误路径测试
 ├── test-auth.py        口令哈希参考校验
 ├── test-stage3.py      登录、退避、文件隔离与重启持久性测试
+├── test-shell.py       终端作业控制、解析恢复、内存稳定与追加重定向测试
 ├── test-xv6.py         QEMU 内核测试驱动（dedicated / usertests / crash）
 ├── README.md           本文档
 ├── README              xv6 原始说明，随 fs.img 打包，不是本文档
@@ -137,6 +138,12 @@ QEMU 默认参数为 `-m 128M -smp 3`，可用 `make qemu CPUS=1` 改变 hart �
 | 口令认证登录 | `login` / `passwd` / `whoami` |
 | 虚拟内存映射 | `mmap()` / `munmap()` → `mmaptest` |
 
+### Shell 重定向与错误处理
+
+`>` 创建或截断目标文件，`>>` 创建或追加，`<` 从文件读取。追加由 `open` 的 `O_APPEND` 标志实现：每个写入事务在 inode 锁内选择文件末尾，独立打开的并发写入不会互相覆盖。跨多个日志事务的大写入允许按事务块交错，不保证整个大写入不可分割。
+
+语法错误只报告错误并返回提示符，保留当前登录身份、工作目录和作业表；每行解析分配在失败或 fork 后回收。前台命令及管道可通过 Ctrl-Z 停止，再使用 `jobs`、`bg PGID`、`fg PGID` 管理；默认停止/继续保留阻塞管道 I/O，其他可投递信号可使阻塞读返回 -1 或部分写返回已传输字节数。
+
 ### 新增系统调用
 
 编号定义在 `kernel/syscall.h`，分发表在 `kernel/syscall.c`，实现在 `kernel/sysproc.c`、`kernel/sysfile.c` 和 `kernel/mmap.c`，用户桩由 `user/usys.pl` 生成。
@@ -210,6 +217,8 @@ python3 test-harness.py                        # 宿主错误路径回归
 python3 test-auth.py                           # 口令哈希参考校验
 python3 test-stage3.py --cpus 1                # 登录、退避、隔离、持久性
 python3 test-stage3.py --cpus 3
+python3 test-shell.py --cpus 1                 # Shell 交互与错误路径
+python3 test-shell.py --cpus 3
 
 ./test-xv6.py dedicated --cpus 1 --repeat 10   # 专用测试连续验收
 ./test-xv6.py dedicated --cpus 3 --repeat 10

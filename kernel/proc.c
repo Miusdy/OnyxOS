@@ -764,9 +764,9 @@ kkill(int pid)
     if (p->pid == pid && p->state != UNUSED &&
         (myproc()->uid == 0 || myproc()->uid == p->uid)) {
       p->killed = 1;
+      p->chan = 0;
       if (p->state == SLEEPING || p->state == STOPPED) {
         // Wake a sleeping or stopped process.
-        p->chan = 0;
         p->state = RUNNABLE;
       }
       release(&p->lock);
@@ -788,12 +788,12 @@ ksignal(int pid, int sig)
     if (p->pid == pid && p->state != UNUSED && p->state != ZOMBIE &&
         (myproc()->uid == 0 || myproc()->uid == p->uid)) {
       p->pending |= 1U << sig;
+      // Also cancel a registered sleep that has not yet called sched().
+      p->chan = 0;
       if (p->state == STOPPED && sig != 4)
         p->state = RUNNABLE;
-      else if (p->state == SLEEPING) {
-        p->chan = 0;
+      else if (p->state == SLEEPING)
         p->state = RUNNABLE;
-      }
       release(&p->lock);
       return 0;
     }
@@ -814,12 +814,12 @@ signalpg(int pgid, int sig, int uid)
     if (p->pgid == pgid && p->state != UNUSED && p->state != ZOMBIE &&
         (uid == 0 || uid == p->uid)) {
       p->pending |= 1U << sig;
+      // Also cancel a registered sleep that has not yet called sched().
+      p->chan = 0;
       if (p->state == STOPPED && sig != 4)
         p->state = RUNNABLE;
-      else if (p->state == SLEEPING) {
-        p->chan = 0;
+      else if (p->state == SLEEPING)
         p->state = RUNNABLE;
-      }
       found = 1;
     }
     release(&p->lock);
@@ -1006,6 +1006,54 @@ signal_pending(struct proc *p)
   return yes;
 }
 
+// Called with p->lock; returns without it, after resume or a racing
+// continue/kill. Used by usertrap and interruptible pipe waits.
+static void
+stopproc(struct proc *p)
+{
+  release(&p->lock);
+  acquire(&wait_lock);
+  wakeup(p->parent);
+  acquire(&p->lock);
+  // A continue/kill may arrive while exchanging locks.
+  int stopping = !p->killed && !(p->pending & ((1U << 3) | (1U << 6)));
+  p->chan = 0;
+  if (stopping)
+    p->state = STOPPED;
+  release(&wait_lock);
+  if (stopping)
+    sched();
+  release(&p->lock);
+}
+
+// Handle only a default stop while a pipe syscall is blocked. A handler or
+// terminating signal must instead return through usertrap. Keeping the
+// syscall here lets a continued pipeline resume its unfinished I/O.
+int
+signal_stop(struct proc *p)
+{
+  int sig;
+  acquire(&p->lock);
+  for (sig = 1; sig <= NSIG; sig++)
+    if ((p->pending & (1U << sig)) && !(p->sigmask & (1U << sig)))
+      break;
+  if (!p->killed && (sig == 4 || (sig == 5 && p->sighandlers[sig] == 0))) {
+    p->pending &= ~(1U << sig);
+    stopproc(p);
+    return 1;
+  }
+  // SIGCONT's default/ignored action can also be consumed in place after
+  // resumption. Otherwise it would abort the pipe syscall just resumed.
+  if (!p->killed && sig == 6 &&
+      (p->sighandlers[sig] == 0 || p->sighandlers[sig] == (uint64)-1)) {
+    p->pending &= ~(1U << sig);
+    release(&p->lock);
+    return 1;
+  }
+  release(&p->lock);
+  return 0;
+}
+
 void
 signal_deliver(struct proc *p)
 {
@@ -1027,9 +1075,7 @@ signal_deliver(struct proc *p)
       return;
     }
     if (sig == 4 || sig == 5) {
-      p->state = STOPPED;
-      sched();
-      release(&p->lock);
+      stopproc(p);
       signal_deliver(p);
       return;
     }

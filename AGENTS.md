@@ -59,6 +59,7 @@ python3 test-harness.py
 python3 test-auth.py
 make kernel/kernel fs.img
 python3 test-stage3.py
+python3 test-shell.py
 python3 test-xv6.py dedicated
 python3 test-xv6.py usertests
 python3 test-xv6.py crash

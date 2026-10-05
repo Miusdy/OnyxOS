@@ -1,5 +1,6 @@
 #include "kernel/types.h"
 #include "kernel/fcntl.h"
+#include "kernel/stat.h"
 #include "user/user.h"
 
 #define WORKERS 6
@@ -59,10 +60,85 @@ worker(int id)
   exit(0);
 }
 
+// Independent opens must select EOF while holding the inode lock. Each
+// short write is one record; verify no lost, torn, or duplicated records.
+static void
+appendtest(void)
+{
+  enum { RECORDS = 32, SIZE = 64 };
+  int ready[2], go[2], fd, status;
+  char record[SIZE], token;
+  char seen[WORKERS][RECORDS];
+  memset(seen, 0, sizeof(seen));
+  fd = open("mixappend", O_CREATE | O_WRONLY | O_TRUNC);
+  check(fd >= 0 && write(fd, "seed", 4) == 4, "append seed");
+  close(fd);
+  check(pipe(ready) == 0 && pipe(go) == 0, "append barriers");
+  for (int id = 0; id < WORKERS; id++) {
+    int pid = fork();
+    check(pid >= 0, "append fork");
+    if (pid == 0) {
+      close(ready[0]);
+      close(go[1]);
+      fd = open("mixappend", O_WRONLY | O_APPEND);
+      check(fd >= 0, "append open");
+      check(write(ready[1], "r", 1) == 1 && read(go[0], &token, 1) == 1,
+            "append barrier");
+      for (int r = 0; r < RECORDS; r++) {
+        memset(record, 'a' + id, sizeof(record));
+        record[0] = id;
+        record[1] = r;
+        check(write(fd, record, sizeof(record)) == sizeof(record),
+              "append record");
+      }
+      close(fd);
+      exit(0);
+    }
+  }
+  close(ready[1]);
+  close(go[0]);
+  for (int i = 0; i < WORKERS; i++)
+    check(read(ready[0], &token, 1) == 1, "append ready");
+  for (int i = 0; i < WORKERS; i++)
+    check(write(go[1], "g", 1) == 1, "append start");
+  close(ready[0]);
+  close(go[1]);
+  for (int i = 0; i < WORKERS; i++)
+    check(wait(&status) > 0 && status == 0, "append child");
+  fd = open("mixappend", O_RDONLY);
+  check(fd >= 0 && read(fd, record, 4) == 4 && memcmp(record, "seed", 4) == 0,
+        "append preserves prefix");
+  for (int i = 0; i < WORKERS * RECORDS; i++) {
+    check(read(fd, record, SIZE) == SIZE, "append count");
+    int id = (uchar)record[0], r = (uchar)record[1];
+    check(id < WORKERS && r < RECORDS && !seen[id][r], "append unique");
+    seen[id][r] = 1;
+    for (int j = 2; j < SIZE; j++)
+      check(record[j] == 'a' + id, "append intact");
+  }
+  check(read(fd, record, 1) == 0, "append EOF");
+  close(fd);
+  // Reopening, dup, and writes beyond one transaction keep append mode.
+  fd = open("mixappend", O_RDWR | O_APPEND);
+  check(fd >= 0 && read(fd, record, 4) == 4, "append read offset");
+  int other = dup(fd);
+  close(fd);
+  memset(original, 'z', BYTES);
+  check(other >= 0 && write(other, original, BYTES) == BYTES,
+        "append large dup write");
+  struct stat st;
+  check(fstat(other, &st) == 0 &&
+          st.size == 4 + WORKERS * RECORDS * SIZE + BYTES,
+        "append large size");
+  close(other);
+  check(unlink("mixappend") == 0, "append unlink");
+}
+
 int
 main(void)
 {
   struct fsstat before, after;
+  appendtest();
   // Warm up the root directory slots before recording block usage.
   for (int i = 0; i < WORKERS; i++) {
     char name[] = "mix0";

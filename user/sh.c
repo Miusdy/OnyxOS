@@ -279,12 +279,16 @@ main(void)
       if (slot < 0) {
         fprintf(2, "sh: no such job %d\n", pgid);
       } else {
+        // Make the job the terminal's foreground group before resuming it.
+        // Resuming first lets the job write to the console while the shell
+        // is still the foreground group, so terminal interrupts and stops
+        // would be delivered to the shell instead of to the job.
+        if (foreground)
+          tcsetpgrp(pgid);
         killpg(pgid, SIGCONT);
         jobs[slot].stopped = 0;
-        if (foreground) {
-          tcsetpgrp(pgid);
+        if (foreground)
           job_wait(pgid);
-        }
       }
     } else {
       struct cmd *parsed = parsecmd(cmd);

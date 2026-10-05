@@ -116,6 +116,7 @@ int             ksigaction(int, uint64);
 int             ksigmask(uint);
 int             ksigreturn(void);
 int             signal_pending(struct proc*);
+int             signal_stop(struct proc*);
 void            signal_deliver(struct proc*);
 int             tty_setpgid(int);
 void            tty_interrupt(void);

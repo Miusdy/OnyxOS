@@ -18,6 +18,7 @@ jobs:
       - run: python3 test-auth.py
       - run: make kernel/kernel fs.img
       - run: python3 test-stage3.py
+      - run: python3 test-shell.py
       - run: ./test-xv6.py dedicated
       - run: ./test-xv6.py usertests
       - run: ./test-xv6.py crash

@@ -159,6 +159,10 @@ filewrite(struct file *f, uint64 addr, int n)
 
       begin_op();
       ilock(f->ip);
+      // Serialize EOF selection with the write, including independent
+      // opens. Large writes may interleave only at transaction boundaries.
+      if (f->append)
+        f->off = f->ip->size;
       if ((r = writei(f->ip, 1, addr + i, f->off, n1)) > 0)
         f->off += r;
       iunlock(f->ip);

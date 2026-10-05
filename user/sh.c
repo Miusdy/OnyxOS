@@ -126,6 +126,7 @@ struct backcmd {
 
 int fork1(void); // Fork but panics on failure.
 void panic(char *);
+void freeparse(void);
 struct cmd *parsecmd(char *);
 void runcmd(struct cmd *) __attribute__((noreturn));
 
@@ -169,7 +170,10 @@ runcmd(struct cmd *cmd)
     lcmd = (struct listcmd *)cmd;
     if (fork1() == 0)
       runcmd(lcmd->left);
-    wait(0);
+    // A caught/ignored signal (including SIGCONT) may interrupt wait.
+    // This child is known to exist, so keep waiting until it is reaped.
+    while (wait(0) < 0)
+      ;
     runcmd(lcmd->right);
     break;
 
@@ -193,8 +197,9 @@ runcmd(struct cmd *cmd)
     }
     close(p[0]);
     close(p[1]);
-    wait(0);
-    wait(0);
+    for (int i = 0; i < 2; i++)
+      while (wait(0) < 0)
+        ;
     break;
 
   case BACK:
@@ -283,15 +288,24 @@ main(void)
       }
     } else {
       struct cmd *parsed = parsecmd(cmd);
-      int background = parsed && parsed->type == BACK;
+      if (parsed == 0)
+        continue;
+      int background = parsed->type == BACK;
       struct cmd *run = background ? ((struct backcmd *)parsed)->cmd : parsed;
-      int pid = fork1();
+      int pid = fork();
+      if (pid < 0) {
+        freeparse();
+        fprintf(2, "sh: fork failed\n");
+        continue;
+      }
       if (pid == 0) {
         setpgid(0, getpid());
         sigaction(SIGINT, SIG_DFL);
         sigaction(SIGTSTP, SIG_DFL);
         runcmd(run);
       }
+      // The child owns its fork copy; the parent no longer needs the tree.
+      freeparse();
       setpgid(pid, pid);
       if (background) {
         job_add(pid, 0);
@@ -326,13 +340,52 @@ fork1(void)
 //PAGEBREAK!
 // Constructors
 
+// Bound per-line allocations; the input buffer is 100 bytes.
+// Track allocations independently of tree links to also reclaim incomplete
+// trees after a syntax error or allocation failure.
+static void *parseallocs[100];
+static int nparseallocs;
+static int parsefailed;
+
+void
+freeparse(void)
+{
+  while (nparseallocs)
+    free(parseallocs[--nparseallocs]);
+}
+
+static struct cmd *
+parseerror(char *message)
+{
+  if (!parsefailed)
+    fprintf(2, "sh: %s\n", message);
+  parsefailed = 1;
+  return 0;
+}
+
+static void *
+alloccmd(uint size)
+{
+  void *node;
+  if (parsefailed)
+    return 0;
+  if (nparseallocs == sizeof(parseallocs) / sizeof(parseallocs[0]))
+    return parseerror("command too complex");
+  if ((node = malloc(size)) == 0)
+    return parseerror("out of memory");
+  parseallocs[nparseallocs++] = node;
+  memset(node, 0, size);
+  return node;
+}
+
 struct cmd *
 execcmd(void)
 {
   struct execcmd *cmd;
 
-  cmd = malloc(sizeof(*cmd));
-  memset(cmd, 0, sizeof(*cmd));
+  cmd = alloccmd(sizeof(*cmd));
+  if (cmd == 0)
+    return 0;
   cmd->type = EXEC;
   return (struct cmd *)cmd;
 }
@@ -342,8 +395,9 @@ redircmd(struct cmd *subcmd, char *file, char *efile, int mode, int fd)
 {
   struct redircmd *cmd;
 
-  cmd = malloc(sizeof(*cmd));
-  memset(cmd, 0, sizeof(*cmd));
+  cmd = alloccmd(sizeof(*cmd));
+  if (cmd == 0)
+    return 0;
   cmd->type = REDIR;
   cmd->cmd = subcmd;
   cmd->file = file;
@@ -358,8 +412,9 @@ pipecmd(struct cmd *left, struct cmd *right)
 {
   struct pipecmd *cmd;
 
-  cmd = malloc(sizeof(*cmd));
-  memset(cmd, 0, sizeof(*cmd));
+  cmd = alloccmd(sizeof(*cmd));
+  if (cmd == 0)
+    return 0;
   cmd->type = PIPE;
   cmd->left = left;
   cmd->right = right;
@@ -371,8 +426,9 @@ listcmd(struct cmd *left, struct cmd *right)
 {
   struct listcmd *cmd;
 
-  cmd = malloc(sizeof(*cmd));
-  memset(cmd, 0, sizeof(*cmd));
+  cmd = alloccmd(sizeof(*cmd));
+  if (cmd == 0)
+    return 0;
   cmd->type = LIST;
   cmd->left = left;
   cmd->right = right;
@@ -384,8 +440,9 @@ backcmd(struct cmd *subcmd)
 {
   struct backcmd *cmd;
 
-  cmd = malloc(sizeof(*cmd));
-  memset(cmd, 0, sizeof(*cmd));
+  cmd = alloccmd(sizeof(*cmd));
+  if (cmd == 0)
+    return 0;
   cmd->type = BACK;
   cmd->cmd = subcmd;
   return (struct cmd *)cmd;
@@ -464,12 +521,15 @@ parsecmd(char *s)
   char *es;
   struct cmd *cmd;
 
+  parsefailed = 0;
   es = s + strlen(s);
   cmd = parseline(&s, es);
   peek(&s, es, "");
-  if (s != es) {
-    fprintf(2, "leftovers: %s\n", s);
-    panic("syntax");
+  if (s != es)
+    parseerror("syntax");
+  if (parsefailed) {
+    freeparse();
+    return 0;
   }
   nulterminate(cmd);
   return cmd;
@@ -481,11 +541,11 @@ parseline(char **ps, char *es)
   struct cmd *cmd;
 
   cmd = parsepipe(ps, es);
-  while (peek(ps, es, "&")) {
+  while (!parsefailed && peek(ps, es, "&")) {
     gettoken(ps, es, 0, 0);
     cmd = backcmd(cmd);
   }
-  if (peek(ps, es, ";")) {
+  if (!parsefailed && peek(ps, es, ";")) {
     gettoken(ps, es, 0, 0);
     cmd = listcmd(cmd, parseline(ps, es));
   }
@@ -498,7 +558,7 @@ parsepipe(char **ps, char *es)
   struct cmd *cmd;
 
   cmd = parseexec(ps, es);
-  if (peek(ps, es, "|")) {
+  if (!parsefailed && peek(ps, es, "|")) {
     gettoken(ps, es, 0, 0);
     cmd = pipecmd(cmd, parsepipe(ps, es));
   }
@@ -511,10 +571,10 @@ parseredirs(struct cmd *cmd, char **ps, char *es)
   int tok;
   char *q, *eq;
 
-  while (peek(ps, es, "<>")) {
+  while (!parsefailed && peek(ps, es, "<>")) {
     tok = gettoken(ps, es, 0, 0);
     if (gettoken(ps, es, &q, &eq) != 'a')
-      panic("missing file for redirection");
+      return parseerror("missing file for redirection");
     switch (tok) {
     case '<':
       cmd = redircmd(cmd, q, eq, O_RDONLY, 0);
@@ -523,7 +583,7 @@ parseredirs(struct cmd *cmd, char **ps, char *es)
       cmd = redircmd(cmd, q, eq, O_WRONLY | O_CREATE | O_TRUNC, 1);
       break;
     case '+': // >>
-      cmd = redircmd(cmd, q, eq, O_WRONLY | O_CREATE, 1);
+      cmd = redircmd(cmd, q, eq, O_WRONLY | O_CREATE | O_APPEND, 1);
       break;
     }
   }
@@ -536,11 +596,13 @@ parseblock(char **ps, char *es)
   struct cmd *cmd;
 
   if (!peek(ps, es, "("))
-    panic("parseblock");
+    return parseerror("expected (");
   gettoken(ps, es, 0, 0);
   cmd = parseline(ps, es);
+  if (parsefailed)
+    return 0;
   if (!peek(ps, es, ")"))
-    panic("syntax - missing )");
+    return parseerror("syntax - missing )");
   gettoken(ps, es, 0, 0);
   cmd = parseredirs(cmd, ps, es);
   return cmd;
@@ -558,20 +620,22 @@ parseexec(char **ps, char *es)
     return parseblock(ps, es);
 
   ret = execcmd();
+  if (ret == 0)
+    return 0;
   cmd = (struct execcmd *)ret;
 
   argc = 0;
   ret = parseredirs(ret, ps, es);
-  while (!peek(ps, es, "|)&;")) {
+  while (!parsefailed && !peek(ps, es, "|)&;")) {
     if ((tok = gettoken(ps, es, &q, &eq)) == 0)
       break;
     if (tok != 'a')
-      panic("syntax");
+      return parseerror("syntax");
     cmd->argv[argc] = q;
     cmd->eargv[argc] = eq;
     argc++;
     if (argc >= MAXARGS)
-      panic("too many args");
+      return parseerror("too many args");
     ret = parseredirs(ret, ps, es);
   }
   cmd->argv[argc] = 0;

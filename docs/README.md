@@ -8,7 +8,7 @@
 | --- | --- |
 | [能力路线图](minios-roadmap.md) | 当前范围、已完成阶段及后续候选方向 |
 | [项目完整性审计](integrity-audit.md) | 分支/PR 对照、#4 的范围判断、缺陷修复及本次功能复测 |
-| [功能检查修复日志](functional-fixes-2026-10-05.md) | Ctrl-Z 等待唤醒、Shell 解析回收/恢复、追加写入与回归结果 |
+| [功能检查修复日志](functional-fixes-2026-10-05.md) | Ctrl-Z 等待唤醒、Shell 解析回收/恢复、追加写入、中断与 `fg` 接管顺序及回归结果 |
 | [阶段一验证](stage1-validation.md) | 自动化测试接口和当时的验收记录 |
 | [阶段三验证](stage3-validation.md) | 当前身份/权限/登录契约和该阶段验收；阶段二结果见路线图 |
 | [阶段四验证](stage4-validation.md) | 当前 mmap/munmap 契约、限制和该阶段验收 |

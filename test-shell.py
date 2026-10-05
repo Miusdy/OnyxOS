@@ -38,6 +38,51 @@ def command(q, text):
     return expect(q, start, r"\$ \Z")
 
 
+def command_async(q, text, timeout=15):
+    """Like command(), for use while another process group writes to the
+    console: the writer may print after the prompt, so do not require the
+    prompt to be the last output."""
+    q.read()
+    start = len(q.output)
+    q.cmd(text + "\n")
+    return expect(q, start, r"\$ ", timeout=timeout)
+
+
+def joblist(q, timeout=15):
+    """The shell's job table; a background writer may interleave it."""
+    return command_async(q, "jobs", timeout=timeout)
+
+
+def stopped(q, pg, timeout=5):
+    """Wait for the shell to report job pg as stopped.
+
+    Group signals are delivered per member, not atomically.
+    """
+    deadline = time.monotonic() + timeout
+    output = joblist(q, timeout=timeout)
+    while f"[{pg}] stopped" not in output:
+        assert time.monotonic() < deadline, f"[{pg}] did not stop"
+        time.sleep(0.02)
+        output = joblist(q, timeout=timeout)
+    return output
+
+
+def gone(q, pg, timeout=5):
+    """Wait for job pg to leave the shell's job table.
+
+    waitpg() reports a group's first zombie, so members of an interrupted
+    group may still be exiting when the prompt returns. The deadline is
+    what separates "the interrupt reached the job" from "it did not".
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        output = joblist(q, timeout=timeout)
+        if f"[{pg}]" not in output:
+            return output
+        assert time.monotonic() < deadline, output
+        time.sleep(0.02)
+
+
 def shell_info(q):
     output = command(q, "/ps")
     rows = [line.split() for line in output.splitlines()
@@ -92,6 +137,11 @@ def jobs(q):
     bg = int(re.search(r"^\[(\d+)\] \d+$", output, re.M)[1])
     for program in ("top", "top | cat"):
         for _ in range(3):
+            # Interrupt a foreground job. The job is stopped before fg, and
+            # because the console stream is the only clock this test has,
+            # nothing else may write to it: fg installs the job as the
+            # terminal's foreground group before resuming it, so a refresh
+            # seen after fg proves a ^C sent now reaches the job.
             start = len(q.output)
             q.cmd(program + "\n")
             expect(q, start, r"timer ticks, 1 tick = 100 ms\)\n")
@@ -99,26 +149,34 @@ def jobs(q):
             q.cmd(b"\x1a")
             output = expect(q, start, r"\$ \Z")
             pg = int(re.search(r"\[(\d+)\] stopped$", output, re.M)[1])
-            # Group signals are delivered per member, not atomically.
-            deadline = time.monotonic() + 5
-            while f"[{pg}] stopped" not in command(q, "jobs"):
-                assert time.monotonic() < deadline, "group did not stop"
-                time.sleep(0.02)
-            start = len(q.output)
-            q.cmd(f"bg {pg}\n")
-            # A resumed background writer may print after the prompt.
-            expect(q, start, r"\$ ")
-            q.read()
+            stopped(q, pg)
             start = len(q.output)
             q.cmd(f"fg {pg}\n")
             expect(q, start, r"timer ticks, 1 tick = 100 ms\)\n")
             start = len(q.output)
             q.cmd(b"\x03")
             expect(q, start, r"\$ \Z")
-            output = command(q, "jobs")
-            assert f"[{bg}] running" in output and f"[{pg}]" not in output, output
+            output = gone(q, pg)
+            assert f"[{bg}] running" in output, output
             assert shell_info(q)[0] == pid
-    command(q, f"kill {bg}")
+    # bg resumes a stopped job without handing over the terminal, so the
+    # job keeps writing to the console; assert only on the job table.
+    start = len(q.output)
+    q.cmd("top\n")
+    expect(q, start, r"timer ticks, 1 tick = 100 ms\)\n")
+    start = len(q.output)
+    q.cmd(b"\x1a")
+    output = expect(q, start, r"\$ \Z")
+    pg = int(re.search(r"\[(\d+)\] stopped$", output, re.M)[1])
+    stopped(q, pg)
+    start = len(q.output)
+    q.cmd(f"bg {pg}\n")
+    deadline = time.monotonic() + 5
+    while f"[{pg}] running" not in joblist(q):
+        assert time.monotonic() < deadline, "group did not resume"
+        time.sleep(0.02)
+    command_async(q, f"kill {pg}")
+    command_async(q, f"kill {bg}")
 
 
 if __name__ == "__main__":

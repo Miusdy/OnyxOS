@@ -53,7 +53,7 @@ OnyxOS/
 
 - `sh.c`：Shell，内建 `cd`、`jobs`、`fg PGID`、`bg PGID`、`exit`，支持前台/后台进程组。
 - OnyxOS 新增的命令与自检程序：见下方[常用命令](#常用命令)。
-- 镜像内置 **44** 个用户程序，完整清单见 `Makefile` 的 `UPROGS`。
+- 镜像内置 **45** 个用户程序，完整清单见 `Makefile` 的 `UPROGS`。
 
 ---
 
@@ -118,6 +118,7 @@ QEMU 默认参数为 `-m 128M -smp 3`，可用 `make qemu CPUS=1` 改变 hart �
 | `idtest` / `permtest` / `privtest` | 身份规则、权限判定与特权边界自检 |
 | `mmaptest` | 映射、按需加载、COW 与资源回收自检 |
 | `mixstress` | fork/wait、管道、COW、文件操作的组合压力测试 |
+| `fslimit [n]` | 目录与容量边界自检：跨间接块、上限推导、inode / 块耗尽与名字截断 |
 
 ---
 
@@ -138,6 +139,7 @@ QEMU 默认参数为 `-m 128M -smp 3`，可用 `make qemu CPUS=1` 改变 hart �
 | 用户身份与文件权限 | `getuid` / `getgid` / `setuid` / `setgid` / `chmod` / `chown` → `id` / `idtest` / `permtest` / `privtest` |
 | 口令认证登录 | `login` / `passwd` / `whoami` |
 | 虚拟内存映射 | `mmap()` / `munmap()` → `mmaptest` |
+| 目录与容量边界 | `fsinfo()` 会计 + 边界断言 → `fslimit` |
 
 ### Shell 重定向与错误处理
 
@@ -199,7 +201,7 @@ if (p != MAP_FAILED) {
 
 | 方向 | 计划范围 | 前置条件与验收重点 |
 | --- | --- | --- |
-| 文件系统 | 容量与目录能力 → VFS / 挂载 → `/proc` 等伪文件系统 | 先确定磁盘格式与接口边界；验证大文件、磁盘满、挂载路径与崩溃恢复，不能只调大 `FSSIZE` |
+| 文件系统（进行中，子项一） | 目录与容量边界 → VFS / 挂载 → `/proc` 等伪文件系统 | 先确定磁盘格式与接口边界；验证大文件、磁盘满、挂载路径与崩溃恢复，不能只调大 `FSSIZE` |
 | 网络 | QEMU 网卡驱动 → ARP / IPv4 / ICMP → UDP / socket → TCP | 验证收发、边界检查、超时、丢包与资源回收；TCP 作为独立大批次 |
 | 用户线程 | 共享地址空间线程 → 线程退出与等待 → 用户同步原语 | 先复核 COW 与页表代码的单线程假设、并发解除映射与多核 TLB 同步，用压力测试验证 |
 | 内存压力 | 内存不足错误路径 → 页面回收 → 可选 swap | 需先具备回收策略、页面状态与可控压力测试 |
@@ -229,7 +231,7 @@ python3 test-shell.py --cpus 3
 ./test-xv6.py crash --cpus 3
 ```
 
-- `dedicated` 集合：`cowtest`、`kmemtest`、`waitxtest`、`cputest`、`priotest`、`idtest`、`permtest`、`privtest`、`mmaptest`、`mixstress`、`sigtest`。
+- `dedicated` 集合：`cowtest`、`kmemtest`、`waitxtest`、`cputest`、`priotest`、`idtest`、`permtest`、`privtest`、`mmaptest`、`mixstress`、`sigtest`、`fslimit`。
 - 所有 QEMU 测试先认证为 root；每次运行都会重新生成 `fs.img`。
 - 每个专用测试默认超时 120 秒，完整 `usertests` 为 600 秒，可用 `--timeout` 调整。
 - `--repeat` 只做重复验证，失败不自动重试。
@@ -237,7 +239,7 @@ python3 test-shell.py --cpus 3
 - 同一 checkout 的 QEMU 测试不能并发执行。
 - CI 在 Linux 上以单核/三核各跑一遍完整测试（上限 30 分钟），macOS 仅验证构建。
 
-设计与验收记录：[阶段一](docs/stage1-validation.md)、[阶段三](docs/stage3-validation.md)、[阶段四](docs/stage4-validation.md)、[批次实施记录](docs/batches.md)、[项目完整性审计](docs/integrity-audit.md)、[路线图](docs/minios-roadmap.md)。
+设计与验收记录：[阶段一](docs/stage1-validation.md)、[阶段三](docs/stage3-validation.md)、[阶段四](docs/stage4-validation.md)、[目录与容量边界](docs/batch13-plan.md)、[批次实施记录](docs/batches.md)、[项目完整性审计](docs/integrity-audit.md)、[路线图](docs/minios-roadmap.md)。
 
 ---
 

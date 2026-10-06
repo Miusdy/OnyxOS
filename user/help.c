@@ -119,7 +119,7 @@ static struct entry cmds[] = {
   {"self-checks", "fslimit", "[n]",
    "check the directory and capacity limits, and that they fail cleanly",
    "Grows a directory past its direct blocks, fills the disk, and checks "
-   "that nothing leaks.  n (>= 645) is the directory size; default 700.", 1},
+   "that nothing leaks.  n (>= 645) is the directory size; default 650.", 1},
 
   {"self-checks", "privtest", "",
    "check cross-user controls, privileged operations and snapshots",

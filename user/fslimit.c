@@ -21,13 +21,15 @@
 //
 // Usage: fslimit [n]
 //
-//   n is the number of entries built for check 1 (default 700, which
-//   crosses the direct/indirect boundary at 641).  Reaching the 17,024
-//   ceiling is not practical and the code says so rather than pretending
-//   otherwise: dirlink() looks the name up and then scans again for a
+//   n is the number of entries built for check 1 (default 650, which
+//   crosses the direct/indirect boundary at 641).  Raising it is
+//   expensive: dirlink() looks the name up and then scans again for a
 //   free slot, so building a directory costs a full pass per entry and
-//   n entries cost O(n^2).  n = 700 already means about a million
-//   16-byte reads.  For the same reason the ceiling is checked as
+//   n entries cost O(n^2).  n = 700 measured 63 s in CI against a 120 s
+//   per-case timeout, so the default keeps better than 2x room; n = 650
+//   already means well over half a million 16-byte reads.
+//
+//   For the same reason the 17,024-entry ceiling is checked as
 //   arithmetic plus a measured rate, not by creating 17,024 entries.
 //
 // Everything this program creates it also removes, so the image is left
@@ -40,7 +42,7 @@
 #include "kernel/stat.h"
 #include "user/user.h"
 
-enum { N_DEFAULT = 700, N_LEVELS = 16 };
+enum { N_DEFAULT = 650, N_LEVELS = 16 };
 
 // The user stack is one page, so every buffer lives in .bss.
 static char workdir[2 * MAXPATH];

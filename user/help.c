@@ -116,6 +116,11 @@ static struct entry cmds[] = {
    "Run as root.  Makes fixtures in /permtest-dir, then probes them from "
    "a child that has dropped to uid 1001.", 1},
 
+  {"self-checks", "fslimit", "[n]",
+   "check the directory and capacity limits, and that they fail cleanly",
+   "Grows a directory past its direct blocks, fills the disk, and checks "
+   "that nothing leaks.  n (>= 645) is the directory size; default 650.", 1},
+
   {"self-checks", "privtest", "",
    "check cross-user controls, privileged operations and snapshots",
    "Run as root; verifies UID 1001 versus UID 1002 and copyout cleanup.", 1},

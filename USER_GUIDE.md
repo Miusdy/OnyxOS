@@ -1484,6 +1484,7 @@ cd /home/alice
 | `kmemtest`、`cowtest`、`mmaptest` | 检查内存功能 |
 | `idtest`、`permtest`、`privtest` | 检查身份和权限 |
 | `sigtest` | 检查程序中断、暂停和继续 |
+| `fslimit` | 检查目录和文件容量的边界 |
 | `mixstress`、`stressfs`、`logstress`、`grind` | 给系统施加大量操作，检查稳定性 |
 | `usertests`、`forktest` | 一组功能检查或程序创建能力检查 |
 | `zombie`、`forphan`、`dorphan` | 制造特定状态，检查系统处理方式 |

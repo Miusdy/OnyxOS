@@ -177,6 +177,7 @@ UPROGS=\
 	$U/_whoami\
 	$U/_privtest\
 	$U/_mmaptest\
+	$U/_fslimit\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)

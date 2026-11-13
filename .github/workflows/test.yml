@@ -17,6 +17,9 @@ jobs:
       - run: python3 test-harness.py
       - run: python3 test-auth.py
       - run: make kernel/kernel fs.img
+      - run: python3 test-tools.py
+      - run: python3 test-tools.py --qemu
+        if: matrix.cpus == 1
       - run: python3 test-stage3.py
       - run: python3 test-shell.py
       - run: ./test-xv6.py dedicated

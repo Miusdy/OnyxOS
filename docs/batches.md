@@ -348,3 +348,62 @@ vm_rss(pagetable_t pagetable, uint64 sz)
 本次在既有内核和 Shell 上修复：停止通知遵循 wait_lock / p->lock 锁序并防止锁交接期间丢失继续/终止信号；解析分配统一追踪、在失败或 fork 后释放，解析错误返回主循环；新增 O_APPEND，在 inode 锁保护下按写入事务选择 EOF。系统调用号、磁盘格式及预置程序数量保持不变。
 
 新增 `test-shell.py` 并接入 Linux 单核/三核 CI；`sigtest` 增加父进程先等待再停止子进程，`mixstress` 增加独立 fd 并发追加、记录完整性及 dup/大写入检查。现有 `usertests` 和既有断言未放宽。完整验证结果、开发中发现及剩余限制见[功能检查修复日志](functional-fixes-2026-10-05.md)。
+
+### 批次 14 — 宿主工具与符号化
+
+目标是让 `fs.img` 和地址成为宿主可以直接检查、直接操作的对象，同时给后续批次（15 trace、16 check、18 prof）留下共用的底座。本批不改 `kernel/`、`user/`、`mkfs/`，不改磁盘格式，也不新增系统调用和用户程序；新增目录 `tools/`。
+
+**交付**
+
+| 文件 | 内容 |
+| --- | --- |
+| `tools/onyxfs.py` | `ls` / `cat` / `stat` / `fsck` / `put`，`--json` |
+| `tools/symbolize.py` | `0x...`、`文件:地址`、stdin → `<prefix>addr2line -f -C -e <elf>` |
+| `test-tools.py` | `unittest`：布局推导、坏 magic/旧 magic、截断、脏日志、位图泄漏、inode 越界、`size` 范围内缺失的直接块/间接块/间接项、`put` 复用含旧数据的空闲块、`put` 前后一致性与文件模式、头解析失败、符号化；`--qemu` 追加一次客户机回读 |
+
+**布局常量不硬编码**
+
+块大小、直接块数、目录项名长、`FSMAGIC`、`LOGBLOCKS`、`FSSIZE`、`NINODES` 都在每次运行时从 `kernel/fs.h`、`kernel/types.h`、`kernel/param.h`、`mkfs/mkfs.c` 解析；`NINDIRECT`、`MAXFILE`、`IPB`、`BPB` 按头文件里的同一公式重新计算。`struct dinode`、`struct dirent`、`struct superblock` 的字段偏移也由解析出的字段类型按 C 对齐规则推出，所以 `mode`/`uid`/`gid` 这类后来追加的字段不需要在 Python 里再写一遍。缺宏、未知类型、结构体大小与 mkfs 的假设不符时直接报错并指出文件名与名字，不退回默认值；`test-tools.py` 通过复制头文件并删掉 `#define BSIZE` / 改名 `struct dinode` 来验证这一点（退出码 2，不是 1）。
+
+**`fsck` 的判据**
+
+`fsck` 以"干净镜像"为标准，退出码 0 表示无错误：
+
+1. superblock：magic（旧格式给出专门的提示）、`size`/`nblocks`/`nlog`/`logstart`/`inodestart`/`bmapstart` 与头文件推导值一致、文件长度足够、`ninodes` 与 `mkfs` 的 `NINODES` 一致；
+2. 日志：头部的 `n` 必须在 `[0, nlog)`，非 0 表示有未提交事务，按错误报出（宿主不重放日志）；
+3. 位图：元数据块必须占用、镜像末尾之后的位必须为 0、被 inode 引用的块必须在数据区内且已标记；
+4. inode：类型合法、`nlink ≥ 1`、大小不超过 `MAXFILE * BSIZE`、设备节点大小为 0、目录大小是目录项大小的整数倍；
+5. 地址：直接块与间接块都要落在数据区并被位图标记，同一块被两处引用报"已被谁使用"；`size` 范围内的直接块、间接块或间接表项缺失一律报错（文件系统没有稀疏文件语义）；
+6. 目录：从根遍历，`. ` 与 `..` 的位置和指向、重名、空名、带 `/` 的名字、指向空闲 inode 的项、同一目录被两个父目录引用；
+7. `nlink`：目录按 `1 + 子目录数`、普通文件按目录项引用数核对；分配了却不可达的 inode 单独报出；
+8. 泄漏：位图标为占用但没有任何 inode 引用的数据块逐个报出。
+
+所有信息都带 inode 号、块号或路径，测试据此断言"指出具体 inode/块"。
+
+**`put` 的安全边界**
+
+`put` 先跑一次 `fsck`，不干净直接拒绝；然后**在内存里**分配 inode 与数据块、写间接块、往根目录找空槽或扩展目录、置位图，再对重建后的 bytearray 完整跑一次 `fsck`，只有仍然干净才落盘。落盘用同目录临时文件 + `fsync` + `os.replace`，并保留原镜像的文件模式（`mkstemp` 默认 0600），失败时删掉临时文件、原镜像不动。因此"拒绝"和"失败"都不会留下半写状态，`test-tools.py` 用逐字节 hash 断言这一点。
+
+限制是刻意的：只写根目录、只加普通文件、不覆盖同名文件、不支持目录/设备/硬链接；模式固定 `0644`、属主 `uid 0`；单文件不超过 `MAXFILE * BSIZE`，名字不超过 `DIRSIZ` 字节。运行中的 QEMU 持有旧 inode，所以替换后客户的写入落在旧镜像上，约定先退出 QEMU 再 `put`。
+
+**`symbolize.py`**
+
+前缀按 `--toolprefix`、`TOOLPREFIX`、`riscv64-elf-`、`riscv64-linux-gnu-`、`riscv64-unknown-elf-`、`riscv64-none-elf-`、`riscv64-unknown-linux-gnu-` 依次探测，同一脚本在 macOS、WSL2 与 Linux CI 上通用。`NAME:地址` 里的 `NAME` 先按路径，再按 `user/_NAME` 解析；内核默认 `kernel/kernel`。找不到 `addr2line` 时列出所有尝试过的名字并提示 `--toolprefix`，退出码 2；地址没有符号时打印 `??` 并以退出码 1 结束，不会静默返回空。
+
+**验收结果**
+
+本机（WSL2 / Ubuntu 26.04 / Python 3.12.16 / QEMU 10.2.1 / riscv64-linux-gnu-gcc 15.2.0）：
+
+| 命令 | 结果 |
+| --- | --- |
+| `make fmt && git diff --exit-code` | 无差异（本批不涉及 C 源文件） |
+| `make mkfs/mkfs kernel/kernel fs.img` | 通过，3200 块 / 47 元数据块 |
+| `python3 test-harness.py` | 21 项通过 |
+| `python3 test-auth.py` | 1 项通过 |
+| `python3 test-tools.py` | 33 项通过，约 6.2 秒 |
+| `python3 test-tools.py --qemu` | 34 项通过，约 7.3 秒（含一次客户机启动与 `cat` 回读） |
+| `python3 tools/onyxfs.py fsck fs.img` | 退出码 0，`clean` |
+| `python3 tools/symbolize.py --kernel 0x80000af2` | `panic at ./kernel/printk.c:231` |
+| `python3 test-shell.py --cpus 1` | syntax / memory / append / jobs 全部 PASS |
+
+未执行：三核 QEMU 回归与 Linux CI。本批不涉及内核、页表、信号与磁盘格式，按计划 §2.5 只要求宿主测试、构建和一次 QEMU 冒烟；合并前仍以 PR 的 Linux 单核/三核 CI 为准。

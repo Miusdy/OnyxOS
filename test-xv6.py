@@ -327,7 +327,7 @@ def test_usertests(test=""):
 
 DEDICATED = ("cowtest", "kmemtest", "waitxtest", "cputest", "priotest",
              "idtest", "permtest", "privtest", "mmaptest", "mixstress", "sigtest",
-             "fslimit")
+             "fslimit", "tracetest")
 
 
 def git_metadata(*command):

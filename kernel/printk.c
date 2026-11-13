@@ -232,6 +232,10 @@ panic(char *s)
   panicking = 1;
   printk("panic: ");
   printk("%s\n", s);
+  // Last chance to keep the syscall trail: only the current process, only
+  // if it asked to be traced, and only reading the ring (no locks, no
+  // allocation).  A partial dump is marked as such by trace_panic_dump().
+  trace_panic_dump(myproc());
   panicked = 1; // freeze uart output from other CPUs
   for (;;)
     ;

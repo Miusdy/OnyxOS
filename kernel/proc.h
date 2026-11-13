@@ -148,4 +148,9 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  // Syscall flight recorder.  A process reads its own flag on the syscall
+  // path without p->lock; tracectl() writes another process's flag under
+  // p->lock, so a race can only add or miss an edge, never corrupt state.
+  // fork() inherits it and exec() preserves it.
+  int trace;
 };

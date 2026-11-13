@@ -48,3 +48,6 @@
 
 #define SYS_mmap   47
 #define SYS_munmap 48
+
+#define SYS_tracectl  49
+#define SYS_traceread 50

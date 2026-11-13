@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "syscall.h"
+#include "trace.h"
 #include "defs.h"
 
 // Fetch the uint64 at addr from the current process.
@@ -82,6 +83,8 @@ argstr(int n, char *buf, int max)
 
 extern uint64 sys_mmap(void);
 extern uint64 sys_munmap(void);
+extern uint64 sys_tracectl(void);
+extern uint64 sys_traceread(void);
 
 // Prototypes for the functions that handle system calls.
 extern uint64 sys_fork(void);
@@ -174,6 +177,8 @@ static uint64 (*syscalls[])(void) = {
   [SYS_ttyecho] = sys_ttyecho,
   [SYS_mmap] = sys_mmap,
   [SYS_munmap] = sys_munmap,
+  [SYS_tracectl] = sys_tracectl,
+  [SYS_traceread] = sys_traceread,
   // clang-format on
 };
 
@@ -182,8 +187,28 @@ syscall(void)
 {
   int num;
   struct proc *p = myproc();
+  char path[TRACE_PATH];
+  uint64 a0, a1, a2;
+  int traced;
 
   num = p->trapframe->a7;
+
+  // Snapshot the trace decision and the first three arguments before the
+  // handler can touch the trapframe.  A process that turns tracing off in
+  // this very call still gets its entry recorded; it just does not get an
+  // exit record, because the flag is read again below.
+  traced = p->trace;
+  a0 = p->trapframe->a0;
+  a1 = p->trapframe->a1;
+  a2 = p->trapframe->a2;
+  path[0] = 0;
+  if (traced && trace_takes_path(num)) {
+    if (fetchstr(a0, path, sizeof(path)) < 0)
+      path[0] = 0;
+  }
+  if (traced)
+    trace_record(num, TRACE_ENTER, 0, a0, a1, a2, path);
+
   if (num > 0 && num < NELEM(syscalls) && syscalls[num]) {
     // Use num to lookup the system call function for num, call it,
     // and store its return value in p->trapframe->a0
@@ -192,4 +217,7 @@ syscall(void)
     printk("%d %s: unknown sys call %d\n", p->pid, p->name, num);
     p->trapframe->a0 = -1;
   }
+
+  if (traced && p->trace)
+    trace_record(num, TRACE_EXIT, p->trapframe->a0, a0, a1, a2, path);
 }

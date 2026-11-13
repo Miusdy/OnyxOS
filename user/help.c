@@ -89,6 +89,10 @@ static struct entry cmds[] = {
   {"system info", "dmesg", "",
    "replay the kernel log ring buffer",
    "Root only. Only what printk() emitted; user output is not captured.", 1},
+  {"system info", "trace", "[-f] [-o file] [-e call,...] [command ...]",
+   "print the syscalls one program makes",
+   "trace -p PID attaches to a running process.  -e filters which calls "
+   "are shown, -o writes to a file, and children inherit tracing.", 1},
 
   {"self-checks", "cputest", "[ticks]",
    "cross-check CPU accounting against uptime()",
@@ -128,6 +132,9 @@ static struct entry cmds[] = {
    "exercise concurrent fork, COW, pipes and files", 0, 1},
   {"tests", "testrun", "program [args...]",
    "run a test and print its exit status for the host harness", 0, 1},
+  {"tests", "tracetest", "",
+   "check the syscall flight recorder",
+   "Run with 'testrun tracetest' for an exit status.", 1},
   {"tests", "mmaptest", "",
    "Private anonymous/file mappings, lazy faults, COW and cleanup.",
    "Run with `testrun mmaptest` for an exit status.", 1},

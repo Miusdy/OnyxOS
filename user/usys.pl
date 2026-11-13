@@ -70,3 +70,6 @@ entry("ttyecho");
 
 entry("mmap");
 entry("munmap");
+
+entry("tracectl");
+entry("traceread");

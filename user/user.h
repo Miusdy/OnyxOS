@@ -3,6 +3,7 @@
 #include "kernel/psinfo.h"
 #include "kernel/fsstat.h"
 #include "kernel/sysinfo.h"
+#include "kernel/trace.h"
 
 struct stat;
 
@@ -45,6 +46,11 @@ int sync(void);
 int psinfo(struct psinfo *buf, int max);
 uint64 freemem(void);
 int klog(char *buf, int max, uint64 *seq, uint64 *lost);
+// Syscall flight recorder: tracectl() controls the caller (pid 0) or, with
+// root or same-uid permission, another process; traceread() returns the
+// newest records the caller is allowed to see.
+int tracectl(int op, int pid);
+int traceread(struct trace_entry *buf, int max, uint64 *lost);
 int waitx(int *status, uint64 *utime, uint64 *ktime);
 int fsinfo(struct fsstat *st);
 int sysinfo(struct sysinfo *info);

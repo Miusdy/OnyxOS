@@ -348,3 +348,140 @@ vm_rss(pagetable_t pagetable, uint64 sz)
 本次在既有内核和 Shell 上修复：停止通知遵循 wait_lock / p->lock 锁序并防止锁交接期间丢失继续/终止信号；解析分配统一追踪、在失败或 fork 后释放，解析错误返回主循环；新增 O_APPEND，在 inode 锁保护下按写入事务选择 EOF。系统调用号、磁盘格式及预置程序数量保持不变。
 
 新增 `test-shell.py` 并接入 Linux 单核/三核 CI；`sigtest` 增加父进程先等待再停止子进程，`mixstress` 增加独立 fd 并发追加、记录完整性及 dup/大写入检查。现有 `usertests` 和既有断言未放宽。完整验证结果、开发中发现及剩余限制见[功能检查修复日志](functional-fixes-2026-10-05.md)。
+
+### 批次 14 — 宿主工具与符号化
+
+目标是让 `fs.img` 和地址成为宿主可以直接检查、直接操作的对象，同时给后续批次（15 trace、16 check、18 prof）留下共用的底座。本批不改 `kernel/`、`user/`、`mkfs/`，不改磁盘格式，也不新增系统调用和用户程序；新增目录 `tools/`。
+
+**交付**
+
+| 文件 | 内容 |
+| --- | --- |
+| `tools/onyxfs.py` | `ls` / `cat` / `stat` / `fsck` / `put`，`--json` |
+| `tools/symbolize.py` | `0x...`、`文件:地址`、stdin → `<prefix>addr2line -f -C -e <elf>` |
+| `test-tools.py` | `unittest`：布局推导、坏 magic/旧 magic、截断、脏日志、位图泄漏、inode 越界、`put` 前后一致性与文件模式、头解析失败、符号化；`--qemu` 追加一次客户机回读 |
+
+**布局常量不硬编码**
+
+块大小、直接块数、目录项名长、`FSMAGIC`、`LOGBLOCKS`、`FSSIZE`、`NINODES` 都在每次运行时从 `kernel/fs.h`、`kernel/types.h`、`kernel/param.h`、`mkfs/mkfs.c` 解析；`NINDIRECT`、`MAXFILE`、`IPB`、`BPB` 按头文件里的同一公式重新计算。`struct dinode`、`struct dirent`、`struct superblock` 的字段偏移也由解析出的字段类型按 C 对齐规则推出，所以 `mode`/`uid`/`gid` 这类后来追加的字段不需要在 Python 里再写一遍。缺宏、未知类型、结构体大小与 mkfs 的假设不符时直接报错并指出文件名与名字，不退回默认值；`test-tools.py` 通过复制头文件并删掉 `#define BSIZE` / 改名 `struct dinode` 来验证这一点（退出码 2，不是 1）。
+
+**`fsck` 的判据**
+
+`fsck` 以"干净镜像"为标准，退出码 0 表示无错误：
+
+1. superblock：magic（旧格式给出专门的提示）、`size`/`nblocks`/`nlog`/`logstart`/`inodestart`/`bmapstart` 与头文件推导值一致、文件长度足够、`ninodes` 与 `mkfs` 的 `NINODES` 一致；
+2. 日志：头部的 `n` 必须在 `[0, nlog)`，非 0 表示有未提交事务，按错误报出（宿主不重放日志）；
+3. 位图：元数据块必须占用、镜像末尾之后的位必须为 0、被 inode 引用的块必须在数据区内且已标记；
+4. inode：类型合法、`nlink ≥ 1`、大小不超过 `MAXFILE * BSIZE`、设备节点大小为 0、目录大小是目录项大小的整数倍；
+5. 地址：直接块与间接块都要落在数据区并被位图标记，同一块被两处引用报"已被谁使用"；间接项在文件末尾之后仍被分配时给警告；
+6. 目录：从根遍历，`. ` 与 `..` 的位置和指向、重名、空名、带 `/` 的名字、指向空闲 inode 的项、同一目录被两个父目录引用；
+7. `nlink`：目录按 `1 + 子目录数`、普通文件按目录项引用数核对；分配了却不可达的 inode 单独报出；
+8. 泄漏：位图标为占用但没有任何 inode 引用的数据块逐个报出。
+
+所有信息都带 inode 号、块号或路径，测试据此断言"指出具体 inode/块"。
+
+**`put` 的安全边界**
+
+`put` 先跑一次 `fsck`，不干净直接拒绝；然后**在内存里**分配 inode 与数据块、写间接块、往根目录找空槽或扩展目录、置位图，再对重建后的 bytearray 完整跑一次 `fsck`，只有仍然干净才落盘。落盘用同目录临时文件 + `fsync` + `os.replace`，并保留原镜像的文件模式（`mkstemp` 默认 0600），失败时删掉临时文件、原镜像不动。因此"拒绝"和"失败"都不会留下半写状态，`test-tools.py` 用逐字节 hash 断言这一点。
+
+限制是刻意的：只写根目录、只加普通文件、不覆盖同名文件、不支持目录/设备/硬链接；模式固定 `0644`、属主 `uid 0`；单文件不超过 `MAXFILE * BSIZE`，名字不超过 `DIRSIZ` 字节。运行中的 QEMU 持有旧 inode，所以替换后客户的写入落在旧镜像上，约定先退出 QEMU 再 `put`。
+
+**`symbolize.py`**
+
+前缀按 `--toolprefix`、`TOOLPREFIX`、`riscv64-elf-`、`riscv64-linux-gnu-`、`riscv64-unknown-elf-`、`riscv64-none-elf-`、`riscv64-unknown-linux-gnu-` 依次探测，同一脚本在 macOS、WSL2 与 Linux CI 上通用。`NAME:地址` 里的 `NAME` 先按路径，再按 `user/_NAME` 解析；内核默认 `kernel/kernel`。找不到 `addr2line` 时列出所有尝试过的名字并提示 `--toolprefix`，退出码 2；地址没有符号时打印 `??` 并以退出码 1 结束，不会静默返回空。
+
+**验收结果**
+
+本机（WSL2 / Ubuntu 26.04 / Python 3.12.16 / QEMU 10.2.1 / riscv64-linux-gnu-gcc 15.2.0）：
+
+| 命令 | 结果 |
+| --- | --- |
+| `make fmt && git diff --exit-code` | 无差异（本批不涉及 C 源文件） |
+| `make mkfs/mkfs kernel/kernel fs.img` | 通过，3200 块 / 47 元数据块 |
+| `python3 test-harness.py` | 21 项通过 |
+| `python3 test-auth.py` | 1 项通过 |
+| `python3 test-tools.py` | 30 项通过，约 5.9 秒 |
+| `python3 test-tools.py --qemu` | 31 项通过，约 7.2 秒（含一次客户机启动与 `cat` 回读） |
+| `python3 tools/onyxfs.py fsck fs.img` | 退出码 0，`clean` |
+| `python3 tools/symbolize.py --kernel 0x80000af2` | `panic at ./kernel/printk.c:231` |
+| `python3 test-shell.py --cpus 1` | syntax / memory / append / jobs 全部 PASS |
+
+未执行：三核 QEMU 回归与 Linux CI。本批不涉及内核、页表、信号与磁盘格式，按计划 §2.5 只要求宿主测试、构建和一次 QEMU 冒烟；合并前仍以 PR 的 Linux 单核/三核 CI 为准。
+
+### 批次 15 — 系统调用飞行记录器
+
+目标是让一次失败能回答“谁、在什么时候、调用了什么、参数和路径是什么、返回什么”，并在 panic 时保留现场。默认路径不变：没有进程开启 trace 时，每个系统调用只多一次标志分支，不写环、不复制路径。
+
+**交付**
+
+| 文件 | 内容 |
+| --- | --- |
+| `kernel/trace.h` | 共享的 `struct trace_entry`、`TRACE_*` 常量、系统调用名表 `TRACE_SYSCALLS(X)` |
+| `kernel/trace.c` | 1,024 条记录的全局环、入口/返回记录、`tracectl` / `traceread`、panic 转储 |
+| `kernel/syscall.c` | 在入口与返回处记录，路径类调用在入口有界复制路径 |
+| `kernel/proc.[ch]` | 进程增加 `trace` 标志；`allocproc` 清零，`fork` 继承，`exec` 保留 |
+| `kernel/syscall.h`、`defs.h`、`sysproc.c`、`user/usys.pl`、`user/user.h` | 登记 `SYS_tracectl = 49`、`SYS_traceread = 50` 及用户桩 |
+| `user/trace.c` | `trace` 命令：`-f`、`-p PID`、`-e call,...`、`-o file` |
+| `user/tracetest.c` | `DEDICATED` 自检：失败调用、ppid、按 pid 附着、关闭、权限与过滤、回绕 |
+
+**记录与环**
+
+`struct trace_entry` 为 96 字节（`tick`、`ret`、`args[3]`、`pid`、`ppid`、`uid`、`syscall`、`mode`、`flags`、`seq`、`path[32]`），环共 96 KiB 静态内存。记录点只在 `syscall()`：入口写 ENTER、参数与路径，返回写 EXIT 与返回值；进程在本次调用中关闭 trace 时，只留入口、不写出口。
+
+写入沿用 `klog` 的无锁发布方式：先把槽位的 `seq` 置 0，填完记录后以 release 写入最终序号，再以 release 前移写索引。读者 acquire 读取序号，复制后再次校验；正在被覆盖的槽位直接跳过，因此不会把半个记录交给用户。环回绕时新记录覆盖旧记录，`traceread` 通过 `lost` 返回自上次 `TRACE_CLEAR` 以来被覆盖的记录总数（单调增加），并在 `trace` 命令中按增量提示。
+
+路径类调用（`open`、`mknod`、`unlink`、`link`、`mkdir`、`chdir`、`exec`、`chmod`、`chown`）在入口用最多 31 字节的 `fetchstr` 复制路径；复制失败就把路径清空，不影响系统调用本身。EXIT 记录复用栈上已复制的路径，不再第二次读取用户内存，因此 `exec` 成功后也能显示被执行的路径。
+
+**权限与读取**
+
+- `tracectl(op, pid)`：`op` 为 `TRACE_ON` / `TRACE_OFF` / `TRACE_CLEAR`；`pid = 0` 表示调用者自己。控制另一个进程的规则与 `signal()` 一致：root 或同 UID；`TRACE_CLEAR` 仅 root。
+- `traceread(buf, max, lost)`：返回最近的至多 `max` 条记录（最旧到最新），不带游标；调用者用记录中的 `seq` 去重和续读。非 root 调用者只会收到 `uid` 等于自己的记录，其他 UID 的记录在内核里过滤掉，不进入用户缓冲区。任何锁都不跨 `copyout`。
+- 与计划文字的差异：计划写“非 root 读取其他 UID 的环返回 -1”。实现选择“过滤后不可见，只有自己的记录时返回 0”。理由是返回 -1 会让非 root 的 trace 结果取决于 root 是否恰好也在 trace，而真正的安全属性是不泄露；跨 UID 的 `tracectl` 仍然返回 -1，`tracetest` 同时验证这两点。
+- 另一个差异是 `-f`：`fork` 继承 `trace` 标志是内核规则，子进程和孙进程总会被记录，所以 `-f` 只是把这一行为写清楚，不改变行为；`trace` 命令只对被跟踪目标开启标志，自身的轮询循环不被记录。
+
+**panic 转储**
+
+`panic()` 打印原因后，如果当前进程的 `trace` 为真，从环中取该 pid 的最后 32 条记录按时间顺序打印。路径只读环、不加锁、不分配内存；环回绕或遇到正在改写的槽位时在末尾打印 `trace: partial`。因为会停机，这项能力用临时构建（在 trace 的 `open` 入口插入一次 `panic("trace test")`）验证，验证后立即还原，不加入常规回归。实际输出：
+
+```
+panic: trace test
+trace: last 1 records for pid 4
+trace: 4 3 enter open("/no/such/file",0,1ac8)
+```
+
+**`trace` 命令**
+
+输出固定为 `pid ppid name(args) = ret`；路径类调用的第一个参数显示为带引号的路径，其余参数以十六进制显示，返回值按十进制显示。`-e` 只过滤显示（记录仍在环里），`-o` 写入文件而不是控制台，`-p PID` 附着到已存在的进程并轮询到它退出。命令模式在子进程 `exec` 前开启标志，父进程用 `psinfo` 判断目标是否仍在运行，每 tick 排空一次环，目标结束后再排空一次并以其退出码退出。
+
+**验收结果**
+
+本机（WSL2 Ubuntu 26.04 / Python 3.12.16 / QEMU 10.2.1 / riscv64-linux-gnu-gcc 15.2.0 / clang-format 21.1.8，QEMU 走 TCG）：
+
+| 命令 | 结果 |
+| --- | --- |
+| `make fmt && git diff --exit-code` | 无差异 |
+| `make kernel/kernel fs.img` | 通过，3200 块 / 47 元数据块 |
+| `python3 test-harness.py` | 21 项通过 |
+| `python3 test-auth.py` | 1 项通过 |
+| `python3 test-xv6.py dedicated --cpus 3` | 13 项全部 PASS，`fslimit` 49.1 s，`tracetest` 1.5 s |
+| `python3 test-xv6.py dedicated --cpus 1` | 13 项全部 PASS，`fslimit` 45.8 s，`tracetest` 1.5 s |
+| `python3 test-xv6.py usertests --cpus 3` | `ALL TESTS PASSED`，197.9 s |
+| `python3 test-xv6.py usertests --cpus 1` | `ALL TESTS PASSED`，181.6 s |
+| `python3 test-xv6.py crash --cpus 3` | PASS，7.7 s |
+| `python3 test-xv6.py crash --cpus 1` | PASS，7.3 s |
+| `python3 test-stage3.py --cpus 1` / `--cpus 3` | 两项均 PASS |
+| `python3 test-shell.py --cpus 1` / `--cpus 3` | syntax / memory / append / jobs 全部 PASS |
+| 临时 panic 构建 + 手工启动 | 转储出 pid/ppid、`open` 路径与参数；还原后重新构建通过 |
+
+手工 `/trace -e open /ls /` 能看到 `open("//etc",0x0,0xE) = 4` 这类带路径的记录；`/ls` 的逐字符写和目录读会产生上千条记录，环回绕时输出 `[trace: 724 older records lost]`，符合“诊断流不是可靠审计日志”的定位。
+
+未执行：Linux CI 与 macOS 构建（本机为 WSL2）；合并前仍以 PR 的 Linux 单核/三核 CI 为准。
+
+**限制**
+
+- 环是固定 96 KiB 静态内存。目标程序的写/读很密集时会很快覆盖旧记录；记录丢失以 `lost` 和 `[trace: ... lost]` 明示，不保证完整。
+- `TRACE_CLEAR` 与仍在进行的写者存在竞态：写者可能用旧索引发布一条记录，清空后偶尔还能看到一条旧记录。诊断用途接受这一点。
+- `ppid` 在记录时未持有 `wait_lock`，并发被收养时可能显示新的父进程；这与 trace 的 best-effort 定位一致。
+- `trace` 命令轮询周期为一个 tick，目标在两次轮询之间产生超过 1,024 条记录时会丢记录；`-o` 也只写实际读到的部分。
+- `trace -p` 只能等待目标退出，不能中途停止；需要提前结束时由目标自身退出或从另一个终端杀掉目标。
+- 不把 trace 当作安全审计或持久化日志：环会覆盖，panic 输出允许不完整，非 root 只能看到自己的记录。

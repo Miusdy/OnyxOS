@@ -206,6 +206,7 @@ found:
   p->gid = 0;
   p->pending = 0;
   p->sigmask = 0;
+  p->trace = 0;
   memset(p->sighandlers, 0, sizeof(p->sighandlers));
   p->sigframe_active = 0;
 
@@ -254,6 +255,7 @@ freeproc(struct proc *p)
   p->state = UNUSED;
   p->pending = 0;
   p->sigmask = 0;
+  p->trace = 0;
   p->pgid = 0;
 }
 
@@ -377,6 +379,7 @@ kfork(void)
   // the process, so exec keeps the identity for the same reason.
   np->uid = p->uid;
   np->gid = p->gid;
+  np->trace = p->trace;
   np->sigmask = p->sigmask;
   memmove(np->sighandlers, p->sighandlers, sizeof(np->sighandlers));
   np->sigframe = p->sigframe;

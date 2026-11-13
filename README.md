@@ -21,11 +21,13 @@ OnyxOS/
 ├── common/             内核与用户共享的认证代码（PBKDF2 口令哈希）
 ├── mkfs/               文件系统镜像生成工具
 ├── docs/               设计文档与阶段验证记录
+├── tools/              宿主工具：镜像检查/写入、地址符号化
 ├── .github/workflows/  Linux / macOS CI
 ├── Makefile            构建、QEMU 启动、格式化入口
 ├── AGENTS.md           开发环境、验证与提交要求
 ├── test-harness.py     宿主错误路径测试
 ├── test-auth.py        口令哈希参考校验
+├── test-tools.py       宿主工具（onyxfs/symbolize）测试
 ├── test-stage3.py      登录、退避、文件隔离与重启持久性测试
 ├── test-shell.py       终端作业控制、解析恢复、内存稳定与追加重定向测试
 ├── test-xv6.py         QEMU 内核测试驱动（dedicated / usertests / crash）
@@ -53,7 +55,7 @@ OnyxOS/
 
 - `sh.c`：Shell，内建 `cd`、`jobs`、`fg PGID`、`bg PGID`、`exit`，支持前台/后台进程组。
 - OnyxOS 新增的命令与自检程序：见下方[常用命令](#常用命令)。
-- 镜像内置 **45** 个用户程序，完整清单见 `Makefile` 的 `UPROGS`。
+- 镜像内置 **47** 个用户程序，完整清单见 `Makefile` 的 `UPROGS`。
 
 ---
 
@@ -119,6 +121,40 @@ QEMU 默认参数为 `-m 128M -smp 3`，可用 `make qemu CPUS=1` 改变 hart �
 | `mmaptest` | 映射、按需加载、COW 与资源回收自检 |
 | `mixstress` | fork/wait、管道、COW、文件操作的组合压力测试 |
 | `fslimit [n]` | 目录与容量边界自检：跨间接块、上限推导、inode / 块耗尽与名字截断 |
+| `trace [-f] [-o file] [-e call,...] command` | 系统调用飞行记录：按 pid/ppid 打印参数、路径与返回值；`-p PID` 附着到已有进程 |
+| `tracetest` | 飞行记录器自检：失败调用、ppid、按 pid 附着、关闭、权限过滤与回绕 |
+
+---
+
+## 宿主工具
+
+`tools/` 下的脚本在宿主侧处理镜像和地址，不进入客户机，也不改内核、系统调用号或磁盘格式。
+
+```sh
+python3 tools/onyxfs.py fsck fs.img              # 校验 superblock、日志、位图、inode、目录项、nlink
+python3 tools/onyxfs.py ls fs.img /etc           # 只读浏览
+python3 tools/onyxfs.py cat fs.img /etc/passwd   # 按原样输出文件内容
+python3 tools/onyxfs.py stat fs.img /README      # inode 字段
+python3 tools/onyxfs.py put fs.img note.txt      # 写入一个普通文件到根目录
+
+ADDR=$(riscv64-linux-gnu-nm kernel/kernel | awk '$3 == "panic" {print "0x" $1; exit}')
+python3 tools/symbolize.py --kernel "$ADDR"      # panic at ./kernel/printk.c:...
+python3 tools/symbolize.py --user ls 0x2e4       # user/ls.c:...
+python3 tools/symbolize.py user/_ls:0x2e4        # 同上，直接写 ELF
+cat addresses.txt | python3 tools/symbolize.py   # 也可从 stdin 读
+```
+
+- 所有命令都接受 `--json`，输出字段固定，供脚本和测试使用。
+- 布局常量（`BSIZE`、`NDIRECT`、`DIRSIZ`、`FSMAGIC`、`NINODES`、`FSSIZE`、`LOGBLOCKS` 及派生值）每次运行都从 `kernel/fs.h`、`kernel/types.h`、`kernel/param.h`、`mkfs/mkfs.c` 解析；解析失败时报出文件名和缺失的名字，不使用默认值。
+- `symbolize.py` 依次用 `--toolprefix`、`TOOLPREFIX`、`riscv64-elf-`、`riscv64-linux-gnu-` 等前缀查找 `addr2line`；都找不到时列出尝试过的名字并退出 2。内核默认 `kernel/kernel`，`NAME:地址` 形式的 `NAME` 按 `user/_NAME` 或路径解析。
+- `onyxfs.py` 退出码：0 成功，1 发现问题或拒绝执行，2 用法或头文件解析错误。
+
+`put` 的边界：
+
+- 只支持普通文件，写到根目录，不覆盖同名文件，不支持目录、设备节点和硬链接；
+- 单文件上限 `MAXFILE * BSIZE`，文件名上限 `DIRSIZ` 字节，写入后模式固定为 `0644`、属主 `root`；
+- 只接受干净镜像（日志无未提交事务）：先在内存中重建并经 `fsck` 复检，再写临时副本、`fsync`，最后 `os.replace` 原子替换。任何一步失败都保留原镜像；
+- 运行中的 QEMU 持有旧 inode，替换后它继续写旧镜像，不会写坏新镜像；约定先退出 QEMU 再 `put`。
 
 ---
 
@@ -140,6 +176,8 @@ QEMU 默认参数为 `-m 128M -smp 3`，可用 `make qemu CPUS=1` 改变 hart �
 | 口令认证登录 | `login` / `passwd` / `whoami` |
 | 虚拟内存映射 | `mmap()` / `munmap()` → `mmaptest` |
 | 目录与容量边界 | `fsinfo()` 会计 + 边界断言 → `fslimit` |
+| 系统调用飞行记录与 panic 现场 | `tracectl()` / `traceread()` → `trace` / `tracetest` |
+| 宿主镜像工具与符号化 | `tools/onyxfs.py`（`ls`/`cat`/`stat`/`fsck`/`put`）、`tools/symbolize.py` → `test-tools.py` |
 
 ### Shell 重定向与错误处理
 
@@ -179,6 +217,8 @@ QEMU 默认参数为 `-m 128M -smp 3`，可用 `make qemu CPUS=1` 改变 hart �
 | 46 | `SYS_ttyecho` | `int ttyecho(int enabled)` |
 | 47 | `SYS_mmap` | `void *mmap(void *addr, uint64 len, int prot, int flags, int fd, uint64 off)` |
 | 48 | `SYS_munmap` | `int munmap(void *addr, uint64 len)` |
+| 49 | `SYS_tracectl` | `int tracectl(int op, int pid)` |
+| 50 | `SYS_traceread` | `int traceread(struct trace_entry *buf, int max, uint64 *lost)` |
 
 ### 虚拟内存映射用法
 
@@ -218,6 +258,8 @@ if (p != MAP_FAILED) {
 ```sh
 python3 test-harness.py                        # 宿主错误路径回归
 python3 test-auth.py                           # 口令哈希参考校验
+python3 test-tools.py                          # 宿主镜像工具与符号化（不需要 QEMU）
+python3 test-tools.py --qemu                   # 额外启动一次客户机，回读 put 写入的文件
 python3 test-stage3.py --cpus 1                # 登录、退避、隔离、持久性
 python3 test-stage3.py --cpus 3
 python3 test-shell.py --cpus 1                 # Shell 交互与错误路径
@@ -231,11 +273,12 @@ python3 test-shell.py --cpus 3
 ./test-xv6.py crash --cpus 3
 ```
 
-- `dedicated` 集合：`cowtest`、`kmemtest`、`waitxtest`、`cputest`、`priotest`、`idtest`、`permtest`、`privtest`、`mmaptest`、`mixstress`、`sigtest`、`fslimit`。
+- `dedicated` 集合：`cowtest`、`kmemtest`、`waitxtest`、`cputest`、`priotest`、`idtest`、`permtest`、`privtest`、`mmaptest`、`mixstress`、`sigtest`、`fslimit`、`tracetest`。
 - 所有 QEMU 测试先认证为 root；每次运行都会重新生成 `fs.img`。
 - 每个专用测试默认超时 120 秒，完整 `usertests` 为 600 秒，可用 `--timeout` 调整。
 - `--repeat` 只做重复验证，失败不自动重试。
 - 日志与 JSON 汇总写入 `test-results/`，最近一次串口输出保留在 `test-xv6.out`。
+- `test-tools.py --qemu` 会临时替换 `fs.img` 并在结束后恢复；它同样不能与其他 QEMU 测试并发。
 - 同一 checkout 的 QEMU 测试不能并发执行。
 - CI 在 Linux 上以单核/三核各跑一遍完整测试（上限 30 分钟），macOS 仅验证构建。
 
@@ -257,6 +300,8 @@ python3 test-shell.py --cpus 3
 - **信号接口是子集实现**：用户处理器需显式调用 `sigreturn()`，每进程只保存一层处理器上下文，处理期间屏蔽其他可屏蔽信号。
 - **Shell 作业表最多 16 项**：`fg`/`bg` 要求显式 PGID；没有 POSIX 会话与 SIGTTIN 规则。
 - **mmap 限制**：每进程 16 个区域、单次最多 64 MiB、地址区间 1–2 GiB，不支持共享映射、写回、固定地址、`mprotect` 与可执行映射。
+- **宿主工具不改内核，也不重放日志**：`onyxfs.py put` 只写根目录、只加普通文件、不覆盖同名文件，且要求镜像干净；脏镜像先启动客户机恢复日志再写。`fsck` 能定位到 inode/块/目录项，但不修复；有错误时需要用 `mkfs` 重建或对照备份恢复。
+- **`fsck` 按“干净镜像”判据检查**：日志有未提交事务、块被标记但无人引用、inode 不可达、`nlink` 与目录项对不上都算错误（退出码 1）。`mkfs` 生成、正常关机后的镜像不会触发这些条件。
 - **CPU 时间与内存是采样值**：单次连续占用不足 1 tick（100 ms）的进程可能显示为 0；`uptime()`（仅 hart 0 递增）与被统计进程之间存在核间偏斜，自检容差为 4 tick。
 - **`pages_total` 含内核映像页**：不等于 `kalloc` 管理的页数，一致性检查必须用增量。
 - **页引用计数只有 1 字节**：上限 255，与 `NPROC = 64` 耦合；提高 `NPROC` 需同时换宽度。计数表占 32 KiB 静态内存，不能关闭。

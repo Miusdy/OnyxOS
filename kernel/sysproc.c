@@ -373,3 +373,26 @@ sys_ttyecho(void)
   argint(0, &enabled);
   return consoleecho(enabled);
 }
+
+uint64
+sys_tracectl(void)
+{
+  int op, pid;
+
+  argint(0, &op);
+  argint(1, &pid);
+  return ktracectl(op, pid);
+}
+
+uint64
+sys_traceread(void)
+{
+  struct proc *p = myproc();
+  uint64 buf, lost;
+  int max;
+
+  argaddr(0, &buf);
+  argint(1, &max);
+  argaddr(2, &lost);
+  return ktraceread(p->pagetable, p->sz, buf, max, lost);
+}

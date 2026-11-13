@@ -179,6 +179,13 @@ int             fetchstr(uint64, char*, int);
 int             fetchaddr(uint64, uint64*);
 void            syscall();
 
+// trace.c
+void            trace_record(int, int, uint64, uint64, uint64, uint64, const char*);
+int             trace_takes_path(int);
+int             ktracectl(int, int);
+int             ktraceread(pagetable_t, uint64, uint64, int, uint64);
+void            trace_panic_dump(struct proc*);
+
 // trap.c
 extern uint     ticks;
 void            trapinit(void);

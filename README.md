@@ -55,7 +55,7 @@ OnyxOS/
 
 - `sh.c`：Shell，内建 `cd`、`jobs`、`fg PGID`、`bg PGID`、`exit`，支持前台/后台进程组。
 - OnyxOS 新增的命令与自检程序：见下方[常用命令](#常用命令)。
-- 镜像内置 **&#8203;49** 个用户程序，完整清单见 `Makefile` 的 `UPROGS`。
+- 镜像内置 **49** 个用户程序，完整清单见 `Makefile` 的 `UPROGS`。
 
 ---
 

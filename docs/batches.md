@@ -646,6 +646,7 @@ trace: 4 3 enter open("/no/such/file",0,1ac8)
 - 不使用 multiport，因此只有一个端口；`dev` 设备只在 `make dev` 下存在。
 - `exec` 依赖客户机 `/dev/ag-output` 可写（agent 启动时创建）；磁盘满时 exec 会以 127 或 126 失败并返回 stderr。
 - 热重载监视的是 `user/*.c` 的修改时间；`watch` 串行执行，保存后需要等当前这次运行结束才会处理下一次修改。
+
 ### 批次 20.2 — `sleep` 与不带 `/` 的命令查找
 
 目标是让 Shell 换到别的目录后仍能直接执行命令，并提供一个不依赖 RTC 的等待手段。本批**不新增系统调用**、不改磁盘格式、不改 `exec` ABI。
@@ -654,23 +655,24 @@ trace: 4 3 enter open("/no/such/file",0,1ac8)
 
 | 文件 | 内容 |
 | --- | --- |
-| `user/sleep.c`（新增，51 行） | 严格十进制解析、秒→tick 换算、调用既有 `pause()`；参数错误返回 2，被信号中断返回 1 |
+| `user/sleep.c` | 校验整数秒数并按 tick 等待。到期返回 0，参数错误返回 2，前台 Ctrl-C 触发内核默认退出码 130 |
 | `user/sh.c` | `EXEC` 分支：不含 `/` 的名字先按原样 `exec`，失败后再试 `/<name>`；补 `#include "kernel/param.h"` 取 `MAXPATH` |
 | `user/help.c` | `system` 组新增 `sleep` 条目 |
 | `Makefile` | `UPROGS` 增加 `$U/_sleep` |
-| `README.md` | 程序计数 49→50；常用命令表新增 `sleep seconds` 行 |
+| `README.md`、`USER_GUIDE.md` | 更新程序计数、命令查找规则和 `sleep` 的用法 |
 
 **设计取舍**
 
-1. **复用 `pause(ticks)`，不新增 `nanosleep` 系统调用。** `pause` 的语义（睡 n 个 tick、被信号打断返回 -1）与需求完全一致，新增别名只会扩大 ABI 面积；开发环境计划 §11.3 允许“`sleep(ticks)`”形式，本批按用户态封装实现。同时与 `basic-functions-design.md` §7.3 的建议一致。
-2. **tick 与秒的换算放在用户态。** `kernel/start.c` 的定时器为 `r_time()+1000000`，约 100 ms 一拍，故 1 秒 = 10 tick。整数秒，上限 86400；`sleep 0` 立即返回。
+1. **复用既有的计时接口。** `pause(ticks)` 等待时钟 tick，遇到待处理信号可提前返回。作业由 `fg` 或 `bg` 恢复时，`sleep` 根据 `uptime()` 计算已过去的 tick，仅等待剩余时间。若在暂停期间已经到期，恢复后立即完成。
+2. **每秒按 10 tick 换算。** QEMU 中一个 tick 约 100 ms。命令接受 1 至 86400 个整数秒。作为对[开发环境能力计划](batch14-dev-experience-plan.md) §11.3 的零秒特例，`sleep 0` 立即返回。
 3. **不用 `atoi`。** `atoi("12abc")` 返回 12、`atoi("abc")` 返回 0，都会把输入错误变成一次错误时长的睡眠；解析器逐字符校验并检查溢出，失败返回 2。
 4. **命令查找先原样、再 `/name`。** 含 `/` 的显式路径不回落，`./ls` 与 `/ls` 语义不变；不引入 `PATH`，避免与 20.3 的 `exec` 改动叠加。
-5. **本批不改 `exec` 失败后的退出码。** 现在子进程在 `exec` 失败后落到 `exit(0)`，属于 A1（命令退出状态）的范围，留给独立提交，避免一个 PR 混两件事。
+5. **终止信号沿用内核默认行为。** 在前台按 Ctrl-C 发送 `SIGINT`，内核以状态码 130 终止进程。
+6. **命令查找沿用现有的失败状态。** Shell 子进程在两次 `exec` 都失败后打印错误并执行 `exit(0)`。命令退出状态留给后续批次处理。
 
-**验收结果**
+**初版验收结果**
 
-环境：WSL2 + QEMU 10.2.1、riscv64-linux-gnu-gcc 15.2.0、Python 3.14.4、clang-format 21.1.8。
+以下是作业恢复修复前的记录。环境为 WSL2、QEMU 10.2.1、riscv64-linux-gnu-gcc 15.2.0、Python 3.14.4、clang-format 21.1.8。
 
 | 命令 | 结果 |
 | --- | --- |
@@ -690,10 +692,13 @@ trace: 4 3 enter open("/no/such/file",0,1ac8)
 
 未执行：`CPUS=1` 的 `dedicated` 与 `usertests`（本地只跑三核，以 PR 的 Linux 单核 CI 为准）。
 
+**评审修复验证**
+
+macOS arm64 的 QEMU 单核、三核均通过全部 6 项 Shell 测试。新增的 `lookup` 用例验证当前目录优先、根目录回落和显式路径。`sleep` 用例核对参数退出码、1 秒对应 10 tick，以及等待中的作业收到 `SIGCONT` 后继续运行。将路径缓冲区移出递归栈后，RISC-V GCC 16.2 生成的 `runcmd` 栈帧由 176 字节恢复至 48 字节。
+
 **限制**
 
 - 只支持整数秒，不支持 `0.5` 这类小数，也没有 `sleep` 的 `--help`；
 - 不引入 `PATH`：命令查找只多试一次 `/name`，仍是“根目录为主”的模型；
-- `SIGINT` 走内核默认动作（`kexit(130)`），进程在返回用户态前就结束，`pause` 不会返回 -1，因此不打印 `sleep: interrupted`；该分支只对用户捕获的信号生效；
-- 每个用户程序在镜像里约占 40 KB（链接后未剥离符号），新增一个命令约 +42 块，3200 块的镜像余量已降到 632 块；
+- 初版镜像中新增 `sleep` 后多用约 42 块，3200 块的镜像剩余 632 块；
 - 命令查找优先当前目录的同名文件，这是“先按原样”的必然结果，已在 PR 说明中记录。

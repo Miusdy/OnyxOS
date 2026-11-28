@@ -10,8 +10,7 @@
 #define TICKS_PER_SEC 10
 #define MAX_SECONDS   86400
 
-// Strict decimal parser.  atoi() silently accepts "12abc" and returns 0 for
-// junk, which would turn a typo into a one-tick sleep -- worse than failing.
+// Require every character to be a digit and reject values above the limit.
 static int
 parse_seconds(const char *s, int *out)
 {
@@ -43,9 +42,12 @@ main(int argc, char *argv[])
     fprintf(2, "sleep: bad seconds: %s\n", argv[1]);
     exit(2);
   }
-  if (pause(secs * TICKS_PER_SEC) < 0) {
-    fprintf(2, "sleep: interrupted\n");
-    exit(1);
-  }
+  uint duration = secs * TICKS_PER_SEC;
+  uint start = uptime();
+  uint elapsed = 0;
+  // A stop or continue can interrupt pause(). Count time across job control
+  // using unsigned tick differences so an uptime counter wrap is harmless.
+  while (elapsed < duration && pause(duration - elapsed) < 0)
+    elapsed = (uint)uptime() - start;
   exit(0);
 }

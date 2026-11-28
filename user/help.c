@@ -35,8 +35,9 @@ static struct entry cmds[] = {
    0},
   {"system", "sleep", "seconds",
    "pause for a whole number of seconds",
-   "The timer tick is about 100 ms, so `sleep 1' waits 10 ticks.  Integer "
-   "seconds only; a signal ends the wait early.",
+   "Accepts 0 to 86400 whole seconds (10 ticks per second).  Zero returns "
+   "immediately.  Time spent stopped counts toward the wait.  Ctrl-C ends "
+   "a foreground sleep.",
    1},
 
   {"accounts", "login", "",

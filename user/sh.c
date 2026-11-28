@@ -159,7 +159,8 @@ runcmd(struct cmd *cmd)
     // contain '/' are explicit and are not retried, so `./ls' and `/ls'
     // keep their usual meaning.
     if (strchr(ecmd->argv[0], '/') == 0) {
-      char path[MAXPATH];
+      // Keep the path buffer off the stack used by recursive runcmd calls.
+      static char path[MAXPATH];
 
       if (strlen(ecmd->argv[0]) + 1 < MAXPATH) {
         path[0] = '/';

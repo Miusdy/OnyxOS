@@ -3,6 +3,7 @@
 #include "kernel/types.h"
 #include "user/user.h"
 #include "kernel/fcntl.h"
+#include "kernel/param.h"
 
 // Parsed command representation
 #define EXEC  1
@@ -153,6 +154,19 @@ runcmd(struct cmd *cmd)
     if (ecmd->argv[0] == 0)
       exit(1);
     exec(ecmd->argv[0], ecmd->argv);
+    // A bare name is first tried as given, relative to the working
+    // directory, and then as a program in the root directory.  Names that
+    // contain '/' are explicit and are not retried, so `./ls' and `/ls'
+    // keep their usual meaning.
+    if (strchr(ecmd->argv[0], '/') == 0) {
+      char path[MAXPATH];
+
+      if (strlen(ecmd->argv[0]) + 1 < MAXPATH) {
+        path[0] = '/';
+        strcpy(path + 1, ecmd->argv[0]);
+        exec(path, ecmd->argv);
+      }
+    }
     fprintf(2, "exec %s failed\n", ecmd->argv[0]);
     break;
 

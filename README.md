@@ -55,7 +55,7 @@ OnyxOS/
 
 - `sh.c`：Shell，内建 `cd`、`jobs`、`fg PGID`、`bg PGID`、`exit`，支持前台/后台进程组。
 - OnyxOS 新增的命令与自检程序：见下方[常用命令](#常用命令)。
-- 镜像内置 **49** 个用户程序，完整清单见 `Makefile` 的 `UPROGS`。
+- 镜像内置 **50** 个用户程序，完整清单见 `Makefile` 的 `UPROGS`。
 
 ---
 
@@ -112,6 +112,7 @@ QEMU 默认参数为 `-m 128M -smp 3`，可用 `make qemu CPUS=1` 改变 hart �
 | `chmod mode path` | 修改权限位，属主或 uid 0 可用 |
 | `passwd NAME` | root 修改预置账户口令 |
 | `login` | 口令认证入口，由 `init` 启动，直接执行要求 root |
+| `sleep seconds` | 按整数秒睡眠（1 tick = 100 ms），可被信号打断 |
 | `cputest` / `waitxtest` | CPU 时间统计与子进程账目回收自检 |
 | `priotest` | 调度优先级与老化自检 |
 | `kmemtest` | 分配器会计与泄漏自检 |

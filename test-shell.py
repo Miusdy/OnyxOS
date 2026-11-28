@@ -105,6 +105,44 @@ def syntax(q):
     assert "\ncwd-preserved\n" in command(q, "/cat /home/alice/marker")
 
 
+def lookup(q):
+    command(q, "cd /home/alice")
+    assert "\nfallback\n" in command(q, "echo fallback")
+    assert "\nexec ./echo failed\n" in command(q, "./echo wrong-directory")
+    command(q, "/ln /echo cat")
+    assert "\nlocal\n" in command(q, "cat local")
+    command(q, "echo absolute > marker")
+    assert "\nabsolute\n" in command(q, "/cat marker")
+
+
+def wait_for_sleep(q, pid):
+    deadline = time.monotonic() + 5
+    while True:
+        output = command(q, "/ps")
+        if re.search(rf"^{pid} +\d+ +\d+ +\d+ sleep .*  sleep$", output, re.M):
+            return
+        assert time.monotonic() < deadline, output
+
+
+def sleep_command(q):
+    assert "\nTEST RESULT /sleep 0\n" in command(q, "testrun /sleep 0")
+    for args in ("", " 0 0", " -1", " 1.5", " 1x", " 86401", " 4294967296"):
+        output = command(q, "testrun /sleep" + args)
+        assert "\nTEST RESULT /sleep 2\n" in output, output
+
+    output = command(q, "sleep 86400 &")
+    pid = int(re.search(r"^\[(\d+)\] \1$", output, re.M)[1])
+    wait_for_sleep(q, pid)
+    command(q, f"bg {pid}")  # Deliver SIGCONT to an already sleeping job.
+    # Check the actual guest ticks and allow the background job to handle SIGCONT.
+    output = command(q, "testrun /trace -e pause /sleep 01")
+    assert re.search(r" pause\(0x[Aa],[^)]*\) = 0$", output, re.M), output
+    assert "\nTEST RESULT /trace 0\n" in output, output
+    wait_for_sleep(q, pid)
+    command(q, f"kill {pid}")
+    gone(q, pid)
+
+
 def memory(q):
     command(q, "echo warm | cat > shwarm")
     before = shell_info(q)
@@ -129,6 +167,8 @@ def append(q):
     assert "\nfirst\nsecond\n" in command(q, "cat newfile")
     command(q, "echo reset > afile")
     assert "\nreset\n$ " in command(q, "cat afile")
+    command(q, "cat <afile >copy")
+    assert "\nreset\n" in command(q, "cat copy")
 
 
 def jobs(q):
@@ -182,12 +222,14 @@ def jobs(q):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cpus", type=int, choices=(1, 3), default=int(os.environ.get("CPUS", "3")))
-    parser.add_argument("--case", choices=("syntax", "memory", "append", "jobs"))
+    cases = {"syntax": syntax, "memory": memory, "append": append, "jobs": jobs,
+             "lookup": lookup, "sleep": sleep_command}
+    parser.add_argument("--case", choices=cases)
     args = parser.parse_args()
     h.config.cpus = args.cpus
     results = []
     try:
-        for name, test in (("syntax", syntax), ("memory", memory), ("append", append), ("jobs", jobs)):
+        for name, test in cases.items():
             if args.case and args.case != name:
                 continue
             row = {"test": name, "status": "FAIL"}

@@ -33,6 +33,12 @@ static struct entry cmds[] = {
    "the shell itself; supports ; | & < > >> ( )",
    "Background: `cmd &'.  Redirect: `cmd > f', `cmd >> f', `cmd < f'.",
    0},
+  {"system", "sleep", "seconds",
+   "pause for a whole number of seconds",
+   "Accepts 0 to 86400 whole seconds (10 ticks per second).  Zero returns "
+   "immediately.  Time spent stopped counts toward the wait.  Ctrl-C ends "
+   "a foreground sleep.",
+   1},
 
   {"accounts", "login", "",
    "authenticate before starting a shell", "Started by init; root only.", 1},

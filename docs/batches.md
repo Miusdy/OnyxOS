@@ -646,3 +646,59 @@ trace: 4 3 enter open("/no/such/file",0,1ac8)
 - 不使用 multiport，因此只有一个端口；`dev` 设备只在 `make dev` 下存在。
 - `exec` 依赖客户机 `/dev/ag-output` 可写（agent 启动时创建）；磁盘满时 exec 会以 127 或 126 失败并返回 stderr。
 - 热重载监视的是 `user/*.c` 的修改时间；`watch` 串行执行，保存后需要等当前这次运行结束才会处理下一次修改。
+
+### 批次 20.2 — `sleep` 与不带 `/` 的命令查找
+
+目标是让 Shell 换到别的目录后仍能直接执行命令，并提供一个不依赖 RTC 的等待手段。本批**不新增系统调用**、不改磁盘格式、不改 `exec` ABI。
+
+**交付**
+
+| 文件 | 内容 |
+| --- | --- |
+| `user/sleep.c` | 校验整数秒数并按 tick 等待。到期返回 0，参数错误返回 2，前台 Ctrl-C 触发内核默认退出码 130 |
+| `user/sh.c` | `EXEC` 分支：不含 `/` 的名字先按原样 `exec`，失败后再试 `/<name>`；补 `#include "kernel/param.h"` 取 `MAXPATH` |
+| `user/help.c` | `system` 组新增 `sleep` 条目 |
+| `Makefile` | `UPROGS` 增加 `$U/_sleep` |
+| `README.md`、`USER_GUIDE.md` | 更新程序计数、命令查找规则和 `sleep` 的用法 |
+
+**设计取舍**
+
+1. **复用既有的计时接口。** `pause(ticks)` 等待时钟 tick，遇到待处理信号可提前返回。作业由 `fg` 或 `bg` 恢复时，`sleep` 根据 `uptime()` 计算已过去的 tick，仅等待剩余时间。若在暂停期间已经到期，恢复后立即完成。
+2. **每秒按 10 tick 换算。** QEMU 中一个 tick 约 100 ms。命令接受 1 至 86400 个整数秒。作为对[开发环境能力计划](batch14-dev-experience-plan.md) §11.3 的零秒特例，`sleep 0` 立即返回。
+3. **不用 `atoi`。** `atoi("12abc")` 返回 12、`atoi("abc")` 返回 0，都会把输入错误变成一次错误时长的睡眠；解析器逐字符校验并检查溢出，失败返回 2。
+4. **命令查找先原样、再 `/name`。** 含 `/` 的显式路径不回落，`./ls` 与 `/ls` 语义不变；不引入 `PATH`，避免与 20.3 的 `exec` 改动叠加。
+5. **终止信号沿用内核默认行为。** 在前台按 Ctrl-C 发送 `SIGINT`，内核以状态码 130 终止进程。
+6. **命令查找沿用现有的失败状态。** Shell 子进程在两次 `exec` 都失败后打印错误并执行 `exit(0)`。命令退出状态留给后续批次处理。
+
+**初版验收结果**
+
+以下是作业恢复修复前的记录。环境为 WSL2、QEMU 10.2.1、riscv64-linux-gnu-gcc 15.2.0、Python 3.14.4、clang-format 21.1.8。
+
+| 命令 | 结果 |
+| --- | --- |
+| `make fmt && git diff --exit-code` | 通过（首次 `make fmt` 修正 `MAX_SECONDS` 的宏对齐一处） |
+| `make kernel/kernel fs.img` | 通过，`nmeta 47`、`balloc: first 2565`、3200 块，镜像含 `user/_sleep` |
+| `python3 test-harness.py` | 21 项通过 |
+| `python3 test-auth.py` | 1 项通过 |
+| `python3 test-tools.py` | 35 项通过（8.3 s） |
+| `python3 test-tools.py --qemu` | 38 项通过（11.9 s，含一次客户机启动与 `put` 写回读） |
+| `python3 test-stage3.py` | 2/2 通过（`test_login`、`test_invalid_images`），CPU=3 |
+| `python3 test-shell.py` | 4/4 通过（syntax / memory / append / jobs），CPU=3 |
+| `./test-xv6.py dedicated --cpus 3` | 14 项全部 PASS：`check` 1.4 s、`cowtest` 1.5 s、`kmemtest` 1.4 s、`waitxtest` 1.8 s、`cputest` 5.3 s、`priotest` 7.3 s、`idtest` 1.3 s、`permtest` 3.7 s、`privtest` 2.4 s、`mmaptest` 5.8 s、`mixstress` 8.2 s、`sigtest` 2.6 s、`fslimit` 64.6 s、`tracetest` 26.9 s |
+| `./test-xv6.py usertests --cpus 3` | `ALL TESTS PASSED`，251.5 s |
+| `./test-xv6.py crash --cpus 1` / `--cpus 3` | PASS，6.8 s / 7.2 s |
+| 手工验证 | `sleep 0/1/5`、`sleep`（usage，退出码 2）、`sleep abc`/`-1`/`1.5`/`999999999`（拒绝）、`cd /etc` 后 `ls` 可用、`./ls` 失败、`/ls` 可用、`sleep 5` 中 Ctrl-C 终止 |
+| `df` | 2568/3200 块已用、62/200 inode 已用；比加 `sleep` 前多 42 块、1 个 inode |
+
+未执行：`CPUS=1` 的 `dedicated` 与 `usertests`（本地只跑三核，以 PR 的 Linux 单核 CI 为准）。
+
+**评审修复验证**
+
+macOS arm64 的 QEMU 单核、三核均通过全部 6 项 Shell 测试。新增的 `lookup` 用例验证当前目录优先、根目录回落和显式路径。`sleep` 用例核对参数退出码、1 秒对应 10 tick，以及等待中的作业收到 `SIGCONT` 后继续运行。将路径缓冲区移出递归栈后，RISC-V GCC 16.2 生成的 `runcmd` 栈帧由 176 字节恢复至 48 字节。
+
+**限制**
+
+- 只支持整数秒，不支持 `0.5` 这类小数，也没有 `sleep` 的 `--help`；
+- 不引入 `PATH`：命令查找只多试一次 `/name`，仍是“根目录为主”的模型；
+- 初版镜像中新增 `sleep` 后多用约 42 块，3200 块的镜像剩余 632 块；
+- 命令查找优先当前目录的同名文件，这是“先按原样”的必然结果，已在 PR 说明中记录。
